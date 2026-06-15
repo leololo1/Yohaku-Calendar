@@ -119,6 +119,8 @@ const addDays = (date: Date, days: number) => {
 
 const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1);
 
+const startOfWeek = (date: Date) => addDays(date, -date.getDay());
+
 const daysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
 
 const minutesFromTime = (time: string) => {
@@ -262,6 +264,10 @@ export default function App() {
 
   const moveVisibleMonth = (amount: number) => {
     selectVisibleMonth(addMonths(visibleMonth, amount));
+  };
+
+  const moveSelectedWeek = (amount: number) => {
+    selectDate(addDays(parseDateKey(selectedDate), amount * 7), 'week');
   };
 
   const openEvent = (event: CalendarEvent) => {
@@ -423,10 +429,12 @@ export default function App() {
         {mode === 'week' && (
           <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
             <WeekScreen
+              viewportWidth={width}
               selectedDate={selectedDate}
               events={selectedDateEvents}
               allEvents={events}
               onSelectDate={(date) => selectDate(date, 'week')}
+              onSwipeWeek={moveSelectedWeek}
               onSelectEvent={openEvent}
             />
           </Animated.View>
@@ -583,21 +591,38 @@ function MonthScreen({
     });
   };
 
+  const returnMonth = () => {
+    Animated.timing(slideX, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  };
+
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+        onPanResponderMove: (_, gesture) => {
+          slideX.setValue(gesture.dx);
+        },
         onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx <= -48) {
+          if (gesture.dx <= -viewportWidth * 0.22 || gesture.vx < -0.45) {
             slideMonth(1);
+            return;
           }
 
-          if (gesture.dx >= 48) {
+          if (gesture.dx >= viewportWidth * 0.22 || gesture.vx > 0.45) {
             slideMonth(-1);
+            return;
           }
+
+          returnMonth();
         },
+        onPanResponderTerminate: returnMonth,
       }),
-    [slideMonth],
+    [returnMonth, slideMonth, slideX, viewportWidth],
   );
 
   return (
@@ -714,23 +739,85 @@ function ScheduleRow({ event, onPress }: { event: CalendarEvent; onPress: () => 
 }
 
 function WeekScreen({
+  viewportWidth,
   selectedDate,
   events,
   allEvents,
   onSelectDate,
+  onSwipeWeek,
   onSelectEvent,
 }: {
+  viewportWidth: number;
   selectedDate: string;
   events: CalendarEvent[];
   allEvents: CalendarEvent[];
   onSelectDate: (date: Date) => void;
+  onSwipeWeek: (amount: number) => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
   const selected = parseDateKey(selectedDate);
-  const stripDays = Array.from({ length: 7 }, (_, index) => addDays(selected, index - 2));
+  const weekStart = startOfWeek(selected);
+  const stripDays = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
+  const [slideX] = useState(() => new Animated.Value(0));
+
+  const slideWeek = (amount: number) => {
+    const exitX = amount > 0 ? -viewportWidth : viewportWidth;
+    const enterX = amount > 0 ? viewportWidth : -viewportWidth;
+
+    Animated.timing(slideX, {
+      toValue: exitX,
+      duration: 170,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      onSwipeWeek(amount);
+      slideX.setValue(enterX);
+      Animated.timing(slideX, {
+        toValue: 0,
+        duration: 190,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    });
+  };
+
+  const returnWeek = () => {
+    Animated.timing(slideX, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+        onPanResponderMove: (_, gesture) => {
+          slideX.setValue(gesture.dx);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx <= -viewportWidth * 0.22 || gesture.vx < -0.45) {
+            slideWeek(1);
+            return;
+          }
+
+          if (gesture.dx >= viewportWidth * 0.22 || gesture.vx > 0.45) {
+            slideWeek(-1);
+            return;
+          }
+
+          returnWeek();
+        },
+        onPanResponderTerminate: returnWeek,
+      }),
+    [returnWeek, slideWeek, slideX, viewportWidth],
+  );
 
   return (
     <View style={styles.weekScreen}>
+      <Animated.View style={[styles.weekPager, { transform: [{ translateX: slideX }] }]} {...panResponder.panHandlers}>
       <View style={styles.dayMiniCalendar}>
         <View style={styles.weekRow}>
           {weekdays.map((weekday) => (
@@ -770,6 +857,7 @@ function WeekScreen({
 
         {events.length === 0 ? <Text style={styles.timelineEmpty}>予定はありません</Text> : null}
       </View>
+      </Animated.View>
     </View>
   );
 }
@@ -782,9 +870,7 @@ function TimelineEvent({ event, onPress }: { event: CalendarEvent; onPress: () =
 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.timelineEvent, { top, height }, pressed && styles.pressed]}>
-      <Text style={styles.timelineTime}>{event.start}</Text>
       <Text style={styles.timelineTitle}>{event.title}</Text>
-      <Text style={styles.timelineTime}>{event.end}</Text>
     </Pressable>
   );
 }
@@ -1221,6 +1307,9 @@ const styles = StyleSheet.create({
   weekScreen: {
     flex: 1,
   },
+  weekPager: {
+    flex: 1,
+  },
   dayMiniCalendar: {
     borderBottomColor: tokens.hairline,
     borderBottomWidth: 1,
@@ -1290,13 +1379,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: '400',
     marginVertical: 2,
-  },
-  timelineTime: {
-    color: tokens.secondaryText,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '400',
-    fontVariant: ['tabular-nums'],
   },
   timelineEmpty: {
     position: 'absolute',
