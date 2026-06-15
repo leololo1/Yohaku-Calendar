@@ -3,6 +3,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -114,6 +116,8 @@ const addDays = (date: Date, days: number) => {
 
 const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1);
 
+const daysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+
 const minutesFromTime = (time: string) => {
   const [hour, minute] = time.split(':').map(Number);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
@@ -150,9 +154,12 @@ const draftFromEvent = (event: CalendarEvent): EventDraft => ({
 
 const createMonthDays = (visibleMonth: Date, selectedDate: string, events: CalendarEvent[]): CalendarDay[] => {
   const firstDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
+  const lastDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0);
   const start = addDays(firstDay, -firstDay.getDay());
+  const end = addDays(lastDay, 6 - lastDay.getDay());
+  const totalDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
 
-  return Array.from({ length: 42 }, (_, index) => {
+  return Array.from({ length: totalDays }, (_, index) => {
     const date = addDays(start, index);
     const key = toDateKey(date);
 
@@ -176,6 +183,7 @@ export default function App() {
   const [selectedEventId, setSelectedEventId] = useState(initialEvents[0].id);
   const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
   const [storageReady, setStorageReady] = useState(false);
+  const [monthPickerVisible, setMonthPickerVisible] = useState(false);
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
@@ -233,6 +241,19 @@ export default function App() {
     setSelectedDate(key);
     setVisibleMonth(new Date(date.getFullYear(), date.getMonth(), 1));
     setMode(nextMode);
+  };
+
+  const selectVisibleMonth = (date: Date) => {
+    const selected = parseDateKey(selectedDate);
+    const nextMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+    const nextDate = new Date(nextMonth.getFullYear(), nextMonth.getMonth(), Math.min(selected.getDate(), daysInMonth(nextMonth)));
+
+    setVisibleMonth(nextMonth);
+    setSelectedDate(toDateKey(nextDate));
+  };
+
+  const moveVisibleMonth = (amount: number) => {
+    selectVisibleMonth(addMonths(visibleMonth, amount));
   };
 
   const openEvent = (event: CalendarEvent) => {
@@ -339,8 +360,7 @@ export default function App() {
           canGoBack={mode !== 'month'}
           canChangeMonth={mode === 'month'}
           onBack={back}
-          onPreviousMonth={() => setVisibleMonth((current) => addMonths(current, -1))}
-          onNextMonth={() => setVisibleMonth((current) => addMonths(current, 1))}
+          onOpenMonthPicker={() => setMonthPickerVisible(true)}
           onToday={jumpToday}
         />
 
@@ -351,6 +371,7 @@ export default function App() {
             events={selectedDateEvents}
             selectedDate={selectedDate}
             onSelectDate={(date) => selectDate(date)}
+            onSwipeMonth={moveVisibleMonth}
             onOpenDay={() => setMode('day')}
             onSelectEvent={openEvent}
           />
@@ -375,6 +396,16 @@ export default function App() {
             <Text style={styles.addButtonText}>＋</Text>
           </Pressable>
         )}
+
+        <MonthPicker
+          visible={monthPickerVisible}
+          value={visibleMonth}
+          onClose={() => setMonthPickerVisible(false)}
+          onSelect={(date) => {
+            selectVisibleMonth(date);
+            setMonthPickerVisible(false);
+          }}
+        />
       </View>
     </View>
   );
@@ -385,16 +416,14 @@ function Header({
   canGoBack,
   canChangeMonth,
   onBack,
-  onPreviousMonth,
-  onNextMonth,
+  onOpenMonthPicker,
   onToday,
 }: {
   title: string;
   canGoBack: boolean;
   canChangeMonth: boolean;
   onBack: () => void;
-  onPreviousMonth: () => void;
-  onNextMonth: () => void;
+  onOpenMonthPicker: () => void;
   onToday: () => void;
 }) {
   return (
@@ -404,22 +433,19 @@ function Header({
           <Text style={styles.headerAction}>‹</Text>
         </Pressable>
       ) : canChangeMonth ? (
-        <Pressable onPress={onPreviousMonth} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
-          <Text style={styles.headerAction}>‹</Text>
+        <Pressable onPress={onOpenMonthPicker} hitSlop={12} style={({ pressed }) => [styles.monthTitleButton, pressed && styles.pressed]}>
+          <Text style={styles.headerTitle}>{title}</Text>
         </Pressable>
       ) : (
         <View style={styles.headerSide} />
       )}
 
-      <Text style={styles.headerTitle}>{title}</Text>
+      {!canChangeMonth ? <Text style={styles.headerTitle}>{title}</Text> : null}
 
       {canChangeMonth ? (
         <View style={styles.headerActions}>
           <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
             <Text style={styles.todayText}>今日</Text>
-          </Pressable>
-          <Pressable onPress={onNextMonth} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
-            <Text style={styles.headerNext}>›</Text>
           </Pressable>
         </View>
       ) : (
@@ -435,6 +461,7 @@ function MonthScreen({
   events,
   selectedDate,
   onSelectDate,
+  onSwipeMonth,
   onOpenDay,
   onSelectEvent,
 }: {
@@ -443,28 +470,48 @@ function MonthScreen({
   events: CalendarEvent[];
   selectedDate: string;
   onSelectDate: (date: Date) => void;
+  onSwipeMonth: (amount: number) => void;
   onOpenDay: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx <= -48) {
+            onSwipeMonth(1);
+          }
+
+          if (gesture.dx >= 48) {
+            onSwipeMonth(-1);
+          }
+        },
+      }),
+    [onSwipeMonth],
+  );
+
   return (
     <View style={styles.monthScreen}>
-      <View style={styles.weekRow}>
-        {weekdays.map((weekday) => (
-          <Text key={weekday} style={styles.weekday}>
-            {weekday}
-          </Text>
-        ))}
-      </View>
+      <View {...panResponder.panHandlers}>
+        <View style={styles.weekRow}>
+          {weekdays.map((weekday) => (
+            <Text key={weekday} style={styles.weekday}>
+              {weekday}
+            </Text>
+          ))}
+        </View>
 
-      <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
-        {days.map((day) => (
-          <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
-            <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
-              <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
-            </View>
-            <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
-          </Pressable>
-        ))}
+        <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
+          {days.map((day) => (
+            <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
+              <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
+                <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
+              </View>
+              <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
       <View style={styles.sectionLine} />
@@ -480,6 +527,68 @@ function MonthScreen({
         )}
       </View>
     </View>
+  );
+}
+
+function MonthPicker({
+  visible,
+  value,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  value: Date;
+  onClose: () => void;
+  onSelect: (date: Date) => void;
+}) {
+  const [year, setYear] = useState(value.getFullYear());
+  const [month, setMonth] = useState(value.getMonth());
+  const years = useMemo(() => Array.from({ length: 21 }, (_, index) => value.getFullYear() - 10 + index), [value]);
+  const months = useMemo(() => Array.from({ length: 12 }, (_, index) => index), []);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setYear(value.getFullYear());
+    setMonth(value.getMonth());
+  }, [value, visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.pickerBackdrop} onPress={onClose}>
+        <Pressable style={styles.pickerSheet}>
+          <View style={styles.pickerHeader}>
+            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
+              <Text style={styles.pickerAction}>閉じる</Text>
+            </Pressable>
+            <Text style={styles.pickerTitle}>年月</Text>
+            <Pressable onPress={() => onSelect(new Date(year, month, 1))} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
+              <Text style={styles.pickerAction}>決定</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.pickerColumns}>
+            <ScrollView style={styles.pickerColumn} contentContainerStyle={styles.pickerColumnContent} showsVerticalScrollIndicator={false}>
+              {years.map((item) => (
+                <Pressable key={item} onPress={() => setYear(item)} style={styles.pickerItem}>
+                  <Text style={[styles.pickerItemText, item === year && styles.pickerItemTextSelected]}>{item}年</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            <ScrollView style={styles.pickerColumn} contentContainerStyle={styles.pickerColumnContent} showsVerticalScrollIndicator={false}>
+              {months.map((item) => (
+                <Pressable key={item} onPress={() => setMonth(item)} style={styles.pickerItem}>
+                  <Text style={[styles.pickerItemText, item === month && styles.pickerItemTextSelected]}>{item + 1}月</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -703,6 +812,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  monthTitleButton: {
+    minWidth: 120,
+    height: 34,
+    justifyContent: 'center',
+  },
   headerSide: {
     width: 52,
   },
@@ -731,6 +845,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 22,
     fontWeight: '400',
+    textAlign: 'left',
   },
   todayText: {
     color: tokens.secondaryText,
@@ -853,6 +968,70 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '400',
     paddingTop: 22,
+  },
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(250, 250, 248, 0.72)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: tokens.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderColor: tokens.hairline,
+    borderWidth: 1,
+    paddingBottom: 34,
+  },
+  pickerHeader: {
+    height: 54,
+    paddingHorizontal: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomColor: tokens.hairline,
+    borderBottomWidth: 1,
+  },
+  pickerTitle: {
+    color: tokens.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  pickerAction: {
+    color: tokens.secondaryText,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+  },
+  pickerColumns: {
+    height: 224,
+    flexDirection: 'row',
+    paddingHorizontal: 48,
+    paddingTop: 16,
+    gap: 28,
+  },
+  pickerColumn: {
+    flex: 1,
+  },
+  pickerColumnContent: {
+    paddingVertical: 70,
+  },
+  pickerItem: {
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerItemText: {
+    color: tokens.tertiaryText,
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+  },
+  pickerItemTextSelected: {
+    color: tokens.text,
+    fontSize: 20,
+    lineHeight: 26,
   },
   addButton: {
     position: 'absolute',
