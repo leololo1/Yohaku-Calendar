@@ -3,6 +3,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Animated,
+  Easing,
   Modal,
   PanResponder,
   Pressable,
@@ -14,7 +16,8 @@ import {
   View,
 } from 'react-native';
 
-type ViewMode = 'month' | 'day' | 'detail' | 'form';
+type CalendarMode = 'month' | 'week';
+type ViewMode = CalendarMode | 'detail' | 'form';
 type FormMode = 'add' | 'edit';
 
 type CalendarEvent = {
@@ -176,6 +179,7 @@ const createMonthDays = (visibleMonth: Date, selectedDate: string, events: Calen
 
 export default function App() {
   const [mode, setMode] = useState<ViewMode>('month');
+  const [lastCalendarMode, setLastCalendarMode] = useState<CalendarMode>('month');
   const [formMode, setFormMode] = useState<FormMode>('add');
   const [selectedDate, setSelectedDate] = useState('2025-05-20');
   const [visibleMonth, setVisibleMonth] = useState(new Date(2025, 4, 1));
@@ -184,6 +188,7 @@ export default function App() {
   const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
   const [storageReady, setStorageReady] = useState(false);
   const [monthPickerVisible, setMonthPickerVisible] = useState(false);
+  const [calendarOpacity] = useState(() => new Animated.Value(1));
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
@@ -225,7 +230,7 @@ export default function App() {
       return formatMonthTitle(visibleMonth);
     }
 
-    if (mode === 'day') {
+    if (mode === 'week') {
       return formatDateTitle(selectedDate);
     }
 
@@ -240,6 +245,9 @@ export default function App() {
     const key = toDateKey(date);
     setSelectedDate(key);
     setVisibleMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+    if (nextMode === 'month' || nextMode === 'week') {
+      setLastCalendarMode(nextMode);
+    }
     setMode(nextMode);
   };
 
@@ -257,6 +265,9 @@ export default function App() {
   };
 
   const openEvent = (event: CalendarEvent) => {
+    if (mode === 'month' || mode === 'week') {
+      setLastCalendarMode(mode);
+    }
     setSelectedEventId(event.id);
     setSelectedDate(event.date);
     setVisibleMonth(new Date(parseDateKey(event.date).getFullYear(), parseDateKey(event.date).getMonth(), 1));
@@ -264,6 +275,9 @@ export default function App() {
   };
 
   const openAddForm = () => {
+    if (mode === 'month' || mode === 'week') {
+      setLastCalendarMode(mode);
+    }
     setFormMode('add');
     setDraft(emptyDraft(selectedDate));
     setMode('form');
@@ -278,16 +292,36 @@ export default function App() {
 
   const back = () => {
     if (mode === 'detail') {
-      setMode('day');
+      setMode(lastCalendarMode);
       return;
     }
 
     if (mode === 'form') {
-      setMode(formMode === 'edit' ? 'detail' : 'month');
+      setMode(formMode === 'edit' ? 'detail' : lastCalendarMode);
       return;
     }
 
     setMode('month');
+  };
+
+  const switchCalendarMode = () => {
+    const nextMode: CalendarMode = mode === 'month' ? 'week' : 'month';
+
+    Animated.timing(calendarOpacity, {
+      toValue: 0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      setMode(nextMode);
+      setLastCalendarMode(nextMode);
+      Animated.timing(calendarOpacity, {
+        toValue: 1,
+        duration: 150,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    });
   };
 
   const saveEvent = () => {
@@ -343,12 +377,12 @@ export default function App() {
   const deleteEvent = (eventId: string) => {
     setEvents((current) => current.filter((event) => event.id !== eventId));
     setSelectedEventId('');
-    setMode('day');
+    setMode(lastCalendarMode);
   };
 
   const jumpToday = () => {
     const today = new Date();
-    selectDate(today, 'month');
+    selectDate(today, mode === 'week' ? 'week' : 'month');
   };
 
   return (
@@ -357,41 +391,52 @@ export default function App() {
       <View style={[styles.page, compact && styles.pageCompact]}>
         <Header
           title={headerTitle}
-          canGoBack={mode !== 'month'}
-          canChangeMonth={mode === 'month'}
+          canGoBack={mode === 'detail' || mode === 'form'}
+          canPickMonth={mode === 'month'}
+          showCalendarActions={mode === 'month' || mode === 'week'}
+          calendarMode={mode === 'week' ? 'week' : 'month'}
           onBack={back}
           onOpenMonthPicker={() => setMonthPickerVisible(true)}
+          onToggleCalendarMode={switchCalendarMode}
           onToday={jumpToday}
         />
 
         {mode === 'month' && (
-          <MonthScreen
-            compact={compact}
-            days={monthDays}
-            events={selectedDateEvents}
-            selectedDate={selectedDate}
-            onSelectDate={(date) => selectDate(date)}
-            onSwipeMonth={moveVisibleMonth}
-            onOpenDay={() => setMode('day')}
-            onSelectEvent={openEvent}
-          />
+          <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
+            <MonthScreen
+              compact={compact}
+              viewportWidth={width}
+              days={monthDays}
+              events={selectedDateEvents}
+              selectedDate={selectedDate}
+              onSelectDate={(date) => selectDate(date)}
+              onSwipeMonth={moveVisibleMonth}
+              onOpenWeek={() => {
+                setLastCalendarMode('week');
+                setMode('week');
+              }}
+              onSelectEvent={openEvent}
+            />
+          </Animated.View>
         )}
 
-        {mode === 'day' && (
-          <DayScreen
-            selectedDate={selectedDate}
-            events={selectedDateEvents}
-            allEvents={events}
-            onSelectDate={(date) => selectDate(date, 'day')}
-            onSelectEvent={openEvent}
-          />
+        {mode === 'week' && (
+          <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
+            <WeekScreen
+              selectedDate={selectedDate}
+              events={selectedDateEvents}
+              allEvents={events}
+              onSelectDate={(date) => selectDate(date, 'week')}
+              onSelectEvent={openEvent}
+            />
+          </Animated.View>
         )}
 
         {mode === 'detail' && selectedEvent && <DetailScreen event={selectedEvent} onEdit={() => openEditForm(selectedEvent)} onDelete={() => deleteEvent(selectedEvent.id)} />}
 
         {mode === 'form' && <EventForm draft={draft} onChange={setDraft} onSave={saveEvent} />}
 
-        {(mode === 'month' || mode === 'day') && (
+        {(mode === 'month' || mode === 'week') && (
           <Pressable onPress={openAddForm} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
             <Text style={styles.addButtonText}>＋</Text>
           </Pressable>
@@ -414,16 +459,22 @@ export default function App() {
 function Header({
   title,
   canGoBack,
-  canChangeMonth,
+  canPickMonth,
+  showCalendarActions,
+  calendarMode,
   onBack,
   onOpenMonthPicker,
+  onToggleCalendarMode,
   onToday,
 }: {
   title: string;
   canGoBack: boolean;
-  canChangeMonth: boolean;
+  canPickMonth: boolean;
+  showCalendarActions: boolean;
+  calendarMode: CalendarMode;
   onBack: () => void;
   onOpenMonthPicker: () => void;
+  onToggleCalendarMode: () => void;
   onToday: () => void;
 }) {
   return (
@@ -432,20 +483,27 @@ function Header({
         <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
           <Text style={styles.headerAction}>‹</Text>
         </Pressable>
-      ) : canChangeMonth ? (
+      ) : canPickMonth ? (
         <Pressable onPress={onOpenMonthPicker} hitSlop={12} style={({ pressed }) => [styles.monthTitleButton, pressed && styles.pressed]}>
           <Text style={styles.headerTitle}>{title}</Text>
         </Pressable>
+      ) : showCalendarActions ? (
+        <View style={styles.monthTitleButton}>
+          <Text style={styles.headerTitle}>{title}</Text>
+        </View>
       ) : (
         <View style={styles.headerSide} />
       )}
 
-      {!canChangeMonth ? <Text style={styles.headerTitle}>{title}</Text> : null}
+      {!showCalendarActions && !canPickMonth ? <Text style={styles.headerTitle}>{title}</Text> : null}
 
-      {canChangeMonth ? (
+      {showCalendarActions ? (
         <View style={styles.headerActions}>
-          <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
-            <Text style={styles.todayText}>今日</Text>
+          <Pressable onPress={onToggleCalendarMode} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
+            <CalendarModeIcon mode={calendarMode} />
+          </Pressable>
+          <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
+            <TodayIcon />
           </Pressable>
         </View>
       ) : (
@@ -455,45 +513,96 @@ function Header({
   );
 }
 
+function CalendarModeIcon({ mode }: { mode: CalendarMode }) {
+  return (
+    <View style={styles.modeIcon}>
+      <View style={styles.modeIconLine} />
+      {mode === 'month' ? (
+        <View style={styles.modeIconGrid}>
+          {Array.from({ length: 6 }, (_, index) => (
+            <View key={index} style={styles.modeIconDot} />
+          ))}
+        </View>
+      ) : (
+        <View style={styles.modeIconWeekLine} />
+      )}
+    </View>
+  );
+}
+
+function TodayIcon() {
+  return (
+    <View style={styles.todayIcon}>
+      <View style={styles.todayIconTop} />
+      <View style={styles.todayIconDot} />
+    </View>
+  );
+}
+
 function MonthScreen({
   compact,
+  viewportWidth,
   days,
   events,
   selectedDate,
   onSelectDate,
   onSwipeMonth,
-  onOpenDay,
+  onOpenWeek,
   onSelectEvent,
 }: {
   compact: boolean;
+  viewportWidth: number;
   days: CalendarDay[];
   events: CalendarEvent[];
   selectedDate: string;
   onSelectDate: (date: Date) => void;
   onSwipeMonth: (amount: number) => void;
-  onOpenDay: () => void;
+  onOpenWeek: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
+  const [slideX] = useState(() => new Animated.Value(0));
+
+  const slideMonth = (amount: number) => {
+    const exitX = amount > 0 ? -viewportWidth : viewportWidth;
+    const enterX = amount > 0 ? viewportWidth : -viewportWidth;
+
+    Animated.timing(slideX, {
+      toValue: exitX,
+      duration: 170,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      onSwipeMonth(amount);
+      slideX.setValue(enterX);
+      Animated.timing(slideX, {
+        toValue: 0,
+        duration: 190,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    });
+  };
+
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
         onPanResponderRelease: (_, gesture) => {
           if (gesture.dx <= -48) {
-            onSwipeMonth(1);
+            slideMonth(1);
           }
 
           if (gesture.dx >= 48) {
-            onSwipeMonth(-1);
+            slideMonth(-1);
           }
         },
       }),
-    [onSwipeMonth],
+    [slideMonth],
   );
 
   return (
     <View style={styles.monthScreen}>
-      <View {...panResponder.panHandlers}>
+      <Animated.View style={{ transform: [{ translateX: slideX }] }} {...panResponder.panHandlers}>
         <View style={styles.weekRow}>
           {weekdays.map((weekday) => (
             <Text key={weekday} style={styles.weekday}>
@@ -512,12 +621,12 @@ function MonthScreen({
             </Pressable>
           ))}
         </View>
-      </View>
+      </Animated.View>
 
       <View style={styles.sectionLine} />
 
       <View style={styles.scheduleList}>
-        <Pressable onPress={onOpenDay} style={({ pressed }) => pressed && styles.pressed}>
+        <Pressable onPress={onOpenWeek} style={({ pressed }) => pressed && styles.pressed}>
           <Text style={styles.selectedDateText}>{formatDateTitle(selectedDate)}</Text>
         </Pressable>
         {events.length === 0 ? (
@@ -604,7 +713,7 @@ function ScheduleRow({ event, onPress }: { event: CalendarEvent; onPress: () => 
   );
 }
 
-function DayScreen({
+function WeekScreen({
   selectedDate,
   events,
   allEvents,
@@ -621,7 +730,7 @@ function DayScreen({
   const stripDays = Array.from({ length: 7 }, (_, index) => addDays(selected, index - 2));
 
   return (
-    <View style={styles.dayScreen}>
+    <View style={styles.weekScreen}>
       <View style={styles.dayMiniCalendar}>
         <View style={styles.weekRow}>
           {weekdays.map((weekday) => (
@@ -805,6 +914,9 @@ const styles = StyleSheet.create({
   pageCompact: {
     paddingTop: 48,
   },
+  calendarLayer: {
+    flex: 1,
+  },
   header: {
     height: 50,
     paddingHorizontal: 30,
@@ -821,20 +933,14 @@ const styles = StyleSheet.create({
     width: 52,
   },
   headerActions: {
-    width: 72,
+    width: 76,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 14,
+    gap: 10,
   },
   headerAction: {
     width: 24,
-    color: tokens.secondaryText,
-    fontSize: 28,
-    lineHeight: 30,
-    fontWeight: '300',
-  },
-  headerNext: {
     color: tokens.secondaryText,
     fontSize: 28,
     lineHeight: 30,
@@ -847,11 +953,70 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     textAlign: 'left',
   },
-  todayText: {
-    color: tokens.secondaryText,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '400',
+  headerIconButton: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeIcon: {
+    width: 19,
+    height: 17,
+    borderWidth: 1,
+    borderColor: tokens.secondaryText,
+    borderRadius: 4,
+    paddingHorizontal: 3,
+    paddingTop: 4,
+  },
+  modeIconLine: {
+    position: 'absolute',
+    top: 4,
+    left: 3,
+    right: 3,
+    height: 1,
+    backgroundColor: tokens.secondaryText,
+  },
+  modeIconGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 3,
+    columnGap: 3,
+    paddingTop: 4,
+  },
+  modeIconDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: tokens.secondaryText,
+  },
+  modeIconWeekLine: {
+    marginTop: 7,
+    height: 1,
+    backgroundColor: tokens.secondaryText,
+  },
+  todayIcon: {
+    width: 18,
+    height: 18,
+    borderWidth: 1,
+    borderColor: tokens.secondaryText,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  todayIconTop: {
+    position: 'absolute',
+    top: 4,
+    left: 3,
+    right: 3,
+    height: 1,
+    backgroundColor: tokens.secondaryText,
+  },
+  todayIconDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: tokens.secondaryText,
+    marginTop: 5,
   },
   monthScreen: {
     flex: 1,
@@ -1053,7 +1218,7 @@ const styles = StyleSheet.create({
     lineHeight: 30,
     fontWeight: '300',
   },
-  dayScreen: {
+  weekScreen: {
     flex: 1,
   },
   dayMiniCalendar: {
