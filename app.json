@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -19,8 +19,11 @@
     },
     "extra": {
       "eas": {
-        "projectId": ""
+        "projectId": "853ef768-d454-407b-ac5a-004bcd81e1c6"
       }
-    }
+    },
+    "plugins": [
+      "expo-sqlite"
+    ]
   }
 }

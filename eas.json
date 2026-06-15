@@ -24,12 +24,18 @@
   "submit": {
     "production": {
       "ios": {
-        "ascAppId": "6780133048"
+        "ascAppId": "6780133048",
+        "ascApiKeyPath": "./certs/AuthKey_ZWCF72QM25.p8",
+        "ascApiKeyId": "ZWCF72QM25",
+        "ascApiKeyIssuerId": "b813f639-9589-423d-930e-60cb012336e5"
       }
     },
     "development": {
       "ios": {
-        "ascAppId": "6780133048"
+        "ascAppId": "6780133048",
+        "ascApiKeyPath": "./certs/AuthKey_ZWCF72QM25.p8",
+        "ascApiKeyId": "ZWCF72QM25",
+        "ascApiKeyIssuerId": "b813f639-9589-423d-930e-60cb012336e5"
       }
     }
   }

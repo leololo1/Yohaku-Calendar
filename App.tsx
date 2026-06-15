@@ -1,91 +1,68 @@
+import 'expo-sqlite/localStorage/install';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
 
-type ViewMode = 'month' | 'day' | 'detail';
-
-type CalendarDay = {
-  date: string;
-  muted?: boolean;
-  hasEvent?: boolean;
-  selected?: boolean;
-};
+type ViewMode = 'month' | 'day' | 'detail' | 'form';
+type FormMode = 'add' | 'edit';
 
 type CalendarEvent = {
   id: string;
   title: string;
+  date: string;
   start: string;
   end: string;
   location?: string;
   memo?: string;
+  notification?: string;
+};
+
+type CalendarDay = {
+  key: string;
+  date: Date;
+  label: string;
+  muted: boolean;
+  hasEvent: boolean;
+  selected: boolean;
+};
+
+type EventDraft = {
+  title: string;
+  date: string;
+  start: string;
+  end: string;
+  location: string;
+  memo: string;
+  notification: string;
 };
 
 const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+const hours = ['8:00', '9:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
 
-const monthDays: CalendarDay[] = [
-  { date: '27', muted: true },
-  { date: '28', muted: true },
-  { date: '29', muted: true },
-  { date: '30', muted: true },
-  { date: '1' },
-  { date: '2' },
-  { date: '3' },
-  { date: '4' },
-  { date: '5' },
-  { date: '6' },
-  { date: '7', hasEvent: true },
-  { date: '8' },
-  { date: '9' },
-  { date: '10' },
-  { date: '11' },
-  { date: '12', hasEvent: true },
-  { date: '13' },
-  { date: '14' },
-  { date: '15' },
-  { date: '16', hasEvent: true },
-  { date: '17' },
-  { date: '18' },
-  { date: '19' },
-  { date: '20', selected: true },
-  { date: '21', hasEvent: true },
-  { date: '22' },
-  { date: '23' },
-  { date: '24' },
-  { date: '25' },
-  { date: '26' },
-  { date: '27' },
-  { date: '28', hasEvent: true },
-  { date: '29' },
-  { date: '30' },
-  { date: '31', hasEvent: true },
-  { date: '1', muted: true },
-  { date: '2', muted: true },
-  { date: '3', muted: true },
-  { date: '4', muted: true },
-  { date: '5', muted: true },
-  { date: '6', muted: true },
-  { date: '7', muted: true },
-];
-
-const events: CalendarEvent[] = [
+const initialEvents: CalendarEvent[] = [
   {
     id: 'meeting',
     title: '打ち合わせ',
+    date: '2025-05-20',
     start: '10:00',
     end: '11:00',
     location: '会議室A',
     memo: 'プロジェクトの進捗確認と\n今後の進め方について。',
+    notification: '10分前',
   },
   {
     id: 'review',
     title: '企画レビュー',
+    date: '2025-05-20',
     start: '14:00',
     end: '15:30',
     location: '会議室B',
@@ -93,49 +70,264 @@ const events: CalendarEvent[] = [
   {
     id: 'dinner',
     title: '夕食',
+    date: '2025-05-20',
     start: '19:00',
     end: '20:30',
   },
+  {
+    id: 'sync',
+    title: '確認',
+    date: '2025-05-21',
+    start: '11:00',
+    end: '11:30',
+  },
 ];
 
-const hours = [
-  '8:00',
-  '9:00',
-  '10:00',
-  '11:00',
-  '12:00',
-  '13:00',
-  '14:00',
-  '15:00',
-  '16:00',
-  '17:00',
-  '18:00',
-  '19:00',
-  '20:00',
-  '21:00',
-];
+const eventStorageKey = 'yohaku-calendar-events';
+
+const pad = (value: number) => value.toString().padStart(2, '0');
+
+const toDateKey = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+const parseDateKey = (key: string) => {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(year, month - 1, day);
+};
+
+const formatMonthTitle = (date: Date) => `${date.getFullYear()}年${date.getMonth() + 1}月`;
+
+const formatDateTitle = (dateKey: string) => {
+  const date = parseDateKey(dateKey);
+  return `${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
+};
+
+const formatFullDate = (dateKey: string) => {
+  const date = parseDateKey(dateKey);
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
+};
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1);
+
+const minutesFromTime = (time: string) => {
+  const [hour, minute] = time.split(':').map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return 0;
+  }
+
+  return hour * 60 + minute;
+};
+
+const isTime = (time: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
+
+const sortEvents = (items: CalendarEvent[]) =>
+  [...items].sort((first, second) => minutesFromTime(first.start) - minutesFromTime(second.start));
+
+const emptyDraft = (date: string): EventDraft => ({
+  title: '',
+  date,
+  start: '10:00',
+  end: '11:00',
+  location: '',
+  memo: '',
+  notification: '',
+});
+
+const draftFromEvent = (event: CalendarEvent): EventDraft => ({
+  title: event.title,
+  date: event.date,
+  start: event.start,
+  end: event.end,
+  location: event.location ?? '',
+  memo: event.memo ?? '',
+  notification: event.notification ?? '',
+});
+
+const createMonthDays = (visibleMonth: Date, selectedDate: string, events: CalendarEvent[]): CalendarDay[] => {
+  const firstDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
+  const start = addDays(firstDay, -firstDay.getDay());
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = addDays(start, index);
+    const key = toDateKey(date);
+
+    return {
+      key,
+      date,
+      label: String(date.getDate()),
+      muted: date.getMonth() !== visibleMonth.getMonth(),
+      hasEvent: events.some((event) => event.date === key),
+      selected: key === selectedDate,
+    };
+  });
+};
 
 export default function App() {
   const [mode, setMode] = useState<ViewMode>('month');
-  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent>(events[0]);
+  const [formMode, setFormMode] = useState<FormMode>('add');
+  const [selectedDate, setSelectedDate] = useState('2025-05-20');
+  const [visibleMonth, setVisibleMonth] = useState(new Date(2025, 4, 1));
+  const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
+  const [selectedEventId, setSelectedEventId] = useState(initialEvents[0].id);
+  const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
+  const [storageReady, setStorageReady] = useState(false);
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
+  const selectedEvent = events.find((event) => event.id === selectedEventId);
+  const selectedDateEvents = useMemo(
+    () => sortEvents(events.filter((event) => event.date === selectedDate)),
+    [events, selectedDate],
+  );
+  const monthDays = useMemo(() => createMonthDays(visibleMonth, selectedDate, events), [events, selectedDate, visibleMonth]);
+
+  useEffect(() => {
+    const savedEvents = localStorage.getItem(eventStorageKey);
+
+    if (savedEvents) {
+      try {
+        const parsedEvents = JSON.parse(savedEvents) as CalendarEvent[];
+        if (Array.isArray(parsedEvents)) {
+          setEvents(sortEvents(parsedEvents));
+          setSelectedEventId(parsedEvents[0]?.id ?? '');
+        }
+      } catch {
+        localStorage.removeItem(eventStorageKey);
+      }
+    }
+
+    setStorageReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(eventStorageKey, JSON.stringify(events));
+  }, [events, storageReady]);
+
   const headerTitle = useMemo(() => {
     if (mode === 'month') {
-      return '2025年5月';
+      return formatMonthTitle(visibleMonth);
     }
 
     if (mode === 'day') {
-      return '5月20日（火）';
+      return formatDateTitle(selectedDate);
+    }
+
+    if (mode === 'form') {
+      return formMode === 'add' ? '予定を追加' : '予定を編集';
     }
 
     return '';
-  }, [mode]);
+  }, [formMode, mode, selectedDate, visibleMonth]);
+
+  const selectDate = (date: Date, nextMode: ViewMode = 'month') => {
+    const key = toDateKey(date);
+    setSelectedDate(key);
+    setVisibleMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+    setMode(nextMode);
+  };
 
   const openEvent = (event: CalendarEvent) => {
-    setSelectedEvent(event);
+    setSelectedEventId(event.id);
+    setSelectedDate(event.date);
+    setVisibleMonth(new Date(parseDateKey(event.date).getFullYear(), parseDateKey(event.date).getMonth(), 1));
     setMode('detail');
+  };
+
+  const openAddForm = () => {
+    setFormMode('add');
+    setDraft(emptyDraft(selectedDate));
+    setMode('form');
+  };
+
+  const openEditForm = (event: CalendarEvent) => {
+    setFormMode('edit');
+    setSelectedEventId(event.id);
+    setDraft(draftFromEvent(event));
+    setMode('form');
+  };
+
+  const back = () => {
+    if (mode === 'detail') {
+      setMode('day');
+      return;
+    }
+
+    if (mode === 'form') {
+      setMode(formMode === 'edit' ? 'detail' : 'month');
+      return;
+    }
+
+    setMode('month');
+  };
+
+  const saveEvent = () => {
+    const title = draft.title.trim();
+    const date = draft.date.trim();
+    const start = draft.start.trim();
+    const end = draft.end.trim();
+
+    if (!title) {
+      Alert.alert('タイトルを入力してください');
+      return;
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      Alert.alert('日付は YYYY-MM-DD で入力してください');
+      return;
+    }
+
+    if (!isTime(start) || !isTime(end)) {
+      Alert.alert('時刻は HH:MM で入力してください');
+      return;
+    }
+
+    if (minutesFromTime(start) >= minutesFromTime(end)) {
+      Alert.alert('終了時刻は開始時刻より後にしてください');
+      return;
+    }
+
+    const savedEvent: CalendarEvent = {
+      id: formMode === 'add' ? `event-${Date.now()}` : selectedEventId,
+      title,
+      date,
+      start,
+      end,
+      location: draft.location.trim() || undefined,
+      memo: draft.memo.trim() || undefined,
+      notification: draft.notification.trim() || undefined,
+    };
+
+    setEvents((current) => {
+      if (formMode === 'add') {
+        return sortEvents([...current, savedEvent]);
+      }
+
+      return sortEvents(current.map((event) => (event.id === selectedEventId ? savedEvent : event)));
+    });
+    setSelectedDate(savedEvent.date);
+    setVisibleMonth(new Date(parseDateKey(savedEvent.date).getFullYear(), parseDateKey(savedEvent.date).getMonth(), 1));
+    setSelectedEventId(savedEvent.id);
+    setMode('detail');
+  };
+
+  const deleteEvent = (eventId: string) => {
+    setEvents((current) => current.filter((event) => event.id !== eventId));
+    setSelectedEventId('');
+    setMode('day');
+  };
+
+  const jumpToday = () => {
+    const today = new Date();
+    selectDate(today, 'month');
   };
 
   return (
@@ -145,23 +337,41 @@ export default function App() {
         <Header
           title={headerTitle}
           canGoBack={mode !== 'month'}
-          onBack={() => setMode(mode === 'detail' ? 'day' : 'month')}
+          canChangeMonth={mode === 'month'}
+          onBack={back}
+          onPreviousMonth={() => setVisibleMonth((current) => addMonths(current, -1))}
+          onNextMonth={() => setVisibleMonth((current) => addMonths(current, 1))}
+          onToday={jumpToday}
         />
 
         {mode === 'month' && (
           <MonthScreen
             compact={compact}
-            onSelectDate={() => setMode('day')}
+            days={monthDays}
+            events={selectedDateEvents}
+            selectedDate={selectedDate}
+            onSelectDate={(date) => selectDate(date)}
+            onOpenDay={() => setMode('day')}
             onSelectEvent={openEvent}
           />
         )}
 
-        {mode === 'day' && <DayScreen onSelectEvent={openEvent} />}
+        {mode === 'day' && (
+          <DayScreen
+            selectedDate={selectedDate}
+            events={selectedDateEvents}
+            allEvents={events}
+            onSelectDate={(date) => selectDate(date, 'day')}
+            onSelectEvent={openEvent}
+          />
+        )}
 
-        {mode === 'detail' && <DetailScreen event={selectedEvent} />}
+        {mode === 'detail' && selectedEvent && <DetailScreen event={selectedEvent} onEdit={() => openEditForm(selectedEvent)} onDelete={() => deleteEvent(selectedEvent.id)} />}
 
-        {mode !== 'detail' && (
-          <Pressable style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
+        {mode === 'form' && <EventForm draft={draft} onChange={setDraft} onSave={saveEvent} />}
+
+        {(mode === 'month' || mode === 'day') && (
+          <Pressable onPress={openAddForm} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
             <Text style={styles.addButtonText}>＋</Text>
           </Pressable>
         )}
@@ -173,16 +383,28 @@ export default function App() {
 function Header({
   title,
   canGoBack,
+  canChangeMonth,
   onBack,
+  onPreviousMonth,
+  onNextMonth,
+  onToday,
 }: {
   title: string;
   canGoBack: boolean;
+  canChangeMonth: boolean;
   onBack: () => void;
+  onPreviousMonth: () => void;
+  onNextMonth: () => void;
+  onToday: () => void;
 }) {
   return (
     <View style={styles.header}>
       {canGoBack ? (
         <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
+          <Text style={styles.headerAction}>‹</Text>
+        </Pressable>
+      ) : canChangeMonth ? (
+        <Pressable onPress={onPreviousMonth} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
           <Text style={styles.headerAction}>‹</Text>
         </Pressable>
       ) : (
@@ -191,20 +413,37 @@ function Header({
 
       <Text style={styles.headerTitle}>{title}</Text>
 
-      <Pressable hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
-        <Text style={styles.headerMore}>…</Text>
-      </Pressable>
+      {canChangeMonth ? (
+        <View style={styles.headerActions}>
+          <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
+            <Text style={styles.todayText}>今日</Text>
+          </Pressable>
+          <Pressable onPress={onNextMonth} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
+            <Text style={styles.headerNext}>›</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.headerSide} />
+      )}
     </View>
   );
 }
 
 function MonthScreen({
   compact,
+  days,
+  events,
+  selectedDate,
   onSelectDate,
+  onOpenDay,
   onSelectEvent,
 }: {
   compact: boolean;
-  onSelectDate: () => void;
+  days: CalendarDay[];
+  events: CalendarEvent[];
+  selectedDate: string;
+  onSelectDate: (date: Date) => void;
+  onOpenDay: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
   return (
@@ -218,18 +457,12 @@ function MonthScreen({
       </View>
 
       <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
-        {monthDays.map((day, index) => (
-          <Pressable
-            key={`${day.date}-${index}`}
-            onPress={day.selected ? onSelectDate : undefined}
-            style={styles.dateCell}
-          >
+        {days.map((day) => (
+          <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
             <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
-              <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.date}</Text>
+              <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
             </View>
-            <View style={styles.dotContainer}>
-              {day.hasEvent && <View style={styles.eventDot} />}
-            </View>
+            <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
           </Pressable>
         ))}
       </View>
@@ -237,22 +470,20 @@ function MonthScreen({
       <View style={styles.sectionLine} />
 
       <View style={styles.scheduleList}>
-        <Text style={styles.selectedDateText}>5月20日（火）</Text>
-        {events.map((event) => (
-          <ScheduleRow key={event.id} event={event} onPress={() => onSelectEvent(event)} />
-        ))}
+        <Pressable onPress={onOpenDay} style={({ pressed }) => pressed && styles.pressed}>
+          <Text style={styles.selectedDateText}>{formatDateTitle(selectedDate)}</Text>
+        </Pressable>
+        {events.length === 0 ? (
+          <Text style={styles.emptyText}>予定はありません</Text>
+        ) : (
+          events.map((event) => <ScheduleRow key={event.id} event={event} onPress={() => onSelectEvent(event)} />)
+        )}
       </View>
     </View>
   );
 }
 
-function ScheduleRow({
-  event,
-  onPress,
-}: {
-  event: CalendarEvent;
-  onPress: () => void;
-}) {
+function ScheduleRow({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.scheduleRow, pressed && styles.pressed]}>
       <View style={styles.scheduleTime}>
@@ -264,7 +495,22 @@ function ScheduleRow({
   );
 }
 
-function DayScreen({ onSelectEvent }: { onSelectEvent: (event: CalendarEvent) => void }) {
+function DayScreen({
+  selectedDate,
+  events,
+  allEvents,
+  onSelectDate,
+  onSelectEvent,
+}: {
+  selectedDate: string;
+  events: CalendarEvent[];
+  allEvents: CalendarEvent[];
+  onSelectDate: (date: Date) => void;
+  onSelectEvent: (event: CalendarEvent) => void;
+}) {
+  const selected = parseDateKey(selectedDate);
+  const stripDays = Array.from({ length: 7 }, (_, index) => addDays(selected, index - 2));
+
   return (
     <View style={styles.dayScreen}>
       <View style={styles.dayMiniCalendar}>
@@ -276,16 +522,19 @@ function DayScreen({ onSelectEvent }: { onSelectEvent: (event: CalendarEvent) =>
           ))}
         </View>
         <View style={styles.dayStrip}>
-          {['18', '19', '20', '21', '22', '23', '24'].map((day) => (
-            <View key={day} style={styles.dayStripCell}>
-              <View style={[styles.dayStripCircle, day === '20' && styles.selectedDateCircle]}>
-                <Text style={styles.dayStripText}>{day}</Text>
-              </View>
-              <View style={styles.dotContainer}>
-                {day === '21' && <View style={styles.eventDot} />}
-              </View>
-            </View>
-          ))}
+          {stripDays.map((day) => {
+            const key = toDateKey(day);
+            const selectedDay = key === selectedDate;
+
+            return (
+              <Pressable key={key} onPress={() => onSelectDate(day)} style={styles.dayStripCell}>
+                <View style={[styles.dayStripCircle, selectedDay && styles.selectedDateCircle]}>
+                  <Text style={styles.dayStripText}>{day.getDate()}</Text>
+                </View>
+                <View style={styles.dotContainer}>{!selectedDay && allEvents.some((event) => event.date === key) && <View style={styles.eventDot} />}</View>
+              </Pressable>
+            );
+          })}
         </View>
       </View>
 
@@ -297,30 +546,24 @@ function DayScreen({ onSelectEvent }: { onSelectEvent: (event: CalendarEvent) =>
           </View>
         ))}
 
-        <TimelineEvent event={events[0]} top={70} height={56} onPress={() => onSelectEvent(events[0])} />
-        <TimelineEvent event={events[1]} top={178} height={64} onPress={() => onSelectEvent(events[1])} />
-        <TimelineEvent event={events[2]} top={326} height={64} onPress={() => onSelectEvent(events[2])} />
+        {events.map((event) => (
+          <TimelineEvent key={event.id} event={event} onPress={() => onSelectEvent(event)} />
+        ))}
+
+        {events.length === 0 ? <Text style={styles.timelineEmpty}>予定はありません</Text> : null}
       </View>
     </View>
   );
 }
 
-function TimelineEvent({
-  event,
-  top,
-  height,
-  onPress,
-}: {
-  event: CalendarEvent;
-  top: number;
-  height: number;
-  onPress: () => void;
-}) {
+function TimelineEvent({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
+  const start = minutesFromTime(event.start);
+  const end = minutesFromTime(event.end);
+  const top = 16 + Math.max(0, ((start - 8 * 60) / 60) * 40);
+  const height = Math.max(38, ((end - start) / 60) * 40);
+
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.timelineEvent, { top, height }, pressed && styles.pressed]}
-    >
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.timelineEvent, { top, height }, pressed && styles.pressed]}>
       <Text style={styles.timelineTime}>{event.start}</Text>
       <Text style={styles.timelineTitle}>{event.title}</Text>
       <Text style={styles.timelineTime}>{event.end}</Text>
@@ -328,26 +571,99 @@ function TimelineEvent({
   );
 }
 
-function DetailScreen({ event }: { event: CalendarEvent }) {
+function DetailScreen({
+  event,
+  onEdit,
+  onDelete,
+}: {
+  event: CalendarEvent;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
-    <ScrollView
-      style={styles.detailScreen}
-      contentContainerStyle={styles.detailContent}
-      showsVerticalScrollIndicator={false}
-    >
+    <ScrollView style={styles.detailScreen} contentContainerStyle={styles.detailContent} showsVerticalScrollIndicator={false}>
       <Text style={styles.detailTitle}>{event.title}</Text>
-      <Text style={styles.detailMeta}>2025年5月20日（火）</Text>
+      <Text style={styles.detailMeta}>{formatFullDate(event.date)}</Text>
       <Text style={styles.detailMeta}>
         {event.start} - {event.end}
       </Text>
 
       {event.location ? <Text style={styles.detailText}>{event.location}</Text> : null}
       {event.memo ? <Text style={styles.detailText}>{event.memo}</Text> : null}
+      {event.notification ? <Text style={styles.detailText}>{event.notification}</Text> : null}
 
-      <Pressable style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}>
-        <Text style={styles.editButtonText}>編集</Text>
+      <View style={styles.detailActions}>
+        <Pressable onPress={onEdit} style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}>
+          <Text style={styles.editButtonText}>編集</Text>
+        </Pressable>
+        <Pressable onPress={onDelete} style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}>
+          <Text style={styles.deleteButtonText}>削除</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
+function EventForm({
+  draft,
+  onChange,
+  onSave,
+}: {
+  draft: EventDraft;
+  onChange: (draft: EventDraft) => void;
+  onSave: () => void;
+}) {
+  const update = (key: keyof EventDraft, value: string) => onChange({ ...draft, [key]: value });
+
+  return (
+    <ScrollView style={styles.formScreen} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <FormField label="タイトル" value={draft.title} onChangeText={(value) => update('title', value)} autoFocus />
+      <FormField label="日付" value={draft.date} onChangeText={(value) => update('date', value)} placeholder="YYYY-MM-DD" />
+      <View style={styles.timeFields}>
+        <FormField label="開始" value={draft.start} onChangeText={(value) => update('start', value)} placeholder="10:00" compact />
+        <FormField label="終了" value={draft.end} onChangeText={(value) => update('end', value)} placeholder="11:00" compact />
+      </View>
+      <FormField label="場所" value={draft.location} onChangeText={(value) => update('location', value)} />
+      <FormField label="通知" value={draft.notification} onChangeText={(value) => update('notification', value)} placeholder="10分前" />
+      <FormField label="メモ" value={draft.memo} onChangeText={(value) => update('memo', value)} multiline />
+
+      <Pressable onPress={onSave} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}>
+        <Text style={styles.saveButtonText}>保存</Text>
       </Pressable>
     </ScrollView>
+  );
+}
+
+function FormField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  multiline,
+  compact,
+  autoFocus,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder?: string;
+  multiline?: boolean;
+  compact?: boolean;
+  autoFocus?: boolean;
+}) {
+  return (
+    <View style={[styles.formField, compact && styles.formFieldCompact]}>
+      <Text style={styles.formLabel}>{label}</Text>
+      <TextInput
+        autoFocus={autoFocus}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={tokens.disabledText}
+        multiline={multiline}
+        style={[styles.formInput, multiline && styles.formInputMultiline]}
+      />
+    </View>
   );
 }
 
@@ -361,10 +677,10 @@ const tokens = {
   disabledText: '#CFCFCB',
   hairline: '#EEEEEA',
   divider: '#E6E6E2',
-  accent: '#DCDCD8',
   selected: '#EFEFED',
   eventBlock: '#F4F4F2',
   dot: '#8E8E89',
+  destructive: '#9B6A62',
 };
 
 const styles = StyleSheet.create({
@@ -388,10 +704,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   headerSide: {
-    width: 24,
+    width: 52,
+  },
+  headerActions: {
+    width: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 14,
   },
   headerAction: {
     width: 24,
+    color: tokens.secondaryText,
+    fontSize: 28,
+    lineHeight: 30,
+    fontWeight: '300',
+  },
+  headerNext: {
     color: tokens.secondaryText,
     fontSize: 28,
     lineHeight: 30,
@@ -403,13 +732,11 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '400',
   },
-  headerMore: {
-    width: 24,
+  todayText: {
     color: tokens.secondaryText,
-    fontSize: 22,
-    lineHeight: 24,
-    fontWeight: '300',
-    textAlign: 'right',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '400',
   },
   monthScreen: {
     flex: 1,
@@ -520,6 +847,13 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '400',
   },
+  emptyText: {
+    color: tokens.tertiaryText,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '400',
+    paddingTop: 22,
+  },
   addButton: {
     position: 'absolute',
     right: 28,
@@ -620,6 +954,15 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
+  timelineEmpty: {
+    position: 'absolute',
+    top: 84,
+    left: 74,
+    color: tokens.tertiaryText,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
   detailScreen: {
     flex: 1,
   },
@@ -648,6 +991,11 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     marginTop: 28,
   },
+  detailActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 36,
+  },
   editButton: {
     width: 80,
     height: 34,
@@ -656,9 +1004,78 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 36,
   },
   editButtonText: {
+    color: tokens.secondaryText,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+  },
+  deleteButton: {
+    width: 80,
+    height: 34,
+    borderRadius: 12,
+    borderColor: tokens.divider,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteButtonText: {
+    color: tokens.destructive,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+  },
+  formScreen: {
+    flex: 1,
+  },
+  formContent: {
+    paddingHorizontal: 32,
+    paddingTop: 38,
+    paddingBottom: 58,
+    gap: 18,
+  },
+  formField: {
+    gap: 8,
+  },
+  formFieldCompact: {
+    flex: 1,
+  },
+  formLabel: {
+    color: tokens.tertiaryText,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '400',
+  },
+  formInput: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+    paddingVertical: 8,
+  },
+  formInputMultiline: {
+    minHeight: 96,
+    textAlignVertical: 'top',
+  },
+  timeFields: {
+    flexDirection: 'row',
+    gap: 18,
+  },
+  saveButton: {
+    width: 82,
+    height: 34,
+    borderRadius: 12,
+    borderColor: tokens.divider,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+  },
+  saveButtonText: {
     color: tokens.secondaryText,
     fontSize: 13,
     lineHeight: 18,
