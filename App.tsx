@@ -193,6 +193,8 @@ export default function App() {
   const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
   const [storageReady, setStorageReady] = useState(false);
   const [monthPickerVisible, setMonthPickerVisible] = useState(false);
+  const [transitionFromMode, setTransitionFromMode] = useState<CalendarMode | null>(null);
+  const [calendarFade] = useState(() => new Animated.Value(1));
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
@@ -275,6 +277,7 @@ export default function App() {
     if (mode === 'month' || mode === 'week') {
       setLastCalendarMode(mode);
     }
+    setTransitionFromMode(null);
     setSelectedEventId(event.id);
     setSelectedDate(event.date);
     setVisibleMonth(new Date(parseDateKey(event.date).getFullYear(), parseDateKey(event.date).getMonth(), 1));
@@ -285,6 +288,7 @@ export default function App() {
     if (mode === 'month' || mode === 'week') {
       setLastCalendarMode(mode);
     }
+    setTransitionFromMode(null);
     setFormMode('add');
     setDraft(emptyDraft(selectedDate));
     setMode('form');
@@ -316,8 +320,22 @@ export default function App() {
       return;
     }
 
+    const currentMode = mode === 'week' ? 'week' : 'month';
+    calendarFade.stopAnimation();
+    calendarFade.setValue(0);
+    setTransitionFromMode(currentMode);
     setMode(nextMode);
     setLastCalendarMode(nextMode);
+    Animated.timing(calendarFade, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setTransitionFromMode(null);
+      }
+    });
   };
 
   const saveEvent = () => {
@@ -381,6 +399,38 @@ export default function App() {
     selectDate(today, mode === 'week' ? 'week' : 'month');
   };
 
+  const activeCalendarMode: CalendarMode | null = mode === 'month' || mode === 'week' ? mode : null;
+  const previousCalendarOpacity = calendarFade.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+
+  const renderCalendarContent = (calendarMode: CalendarMode) =>
+    calendarMode === 'month' ? (
+      <MonthScreen
+        compact={compact}
+        viewportWidth={width}
+        visibleMonth={visibleMonth}
+        allEvents={events}
+        events={selectedDateEvents}
+        selectedDate={selectedDate}
+        onSelectDate={(date) => selectDate(date)}
+        onSwipeMonth={moveVisibleMonth}
+        onOpenWeek={() => changeCalendarMode('week')}
+        onSelectEvent={openEvent}
+      />
+    ) : (
+      <WeekScreen
+        viewportWidth={width}
+        selectedDate={selectedDate}
+        events={selectedDateEvents}
+        allEvents={events}
+        onSelectDate={(date) => selectDate(date, 'week')}
+        onSwipeWeek={moveSelectedWeek}
+        onSelectEvent={openEvent}
+      />
+    );
+
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
@@ -397,37 +447,18 @@ export default function App() {
           onToday={jumpToday}
         />
 
-        {mode === 'month' && (
+        {activeCalendarMode && (
           <View style={styles.calendarLayer}>
-            <MonthScreen
-              compact={compact}
-              viewportWidth={width}
-              visibleMonth={visibleMonth}
-              allEvents={events}
-              events={selectedDateEvents}
-              selectedDate={selectedDate}
-              onSelectDate={(date) => selectDate(date)}
-              onSwipeMonth={moveVisibleMonth}
-              onOpenWeek={() => {
-                setLastCalendarMode('week');
-                setMode('week');
-              }}
-              onSelectEvent={openEvent}
-            />
-          </View>
-        )}
-
-        {mode === 'week' && (
-          <View style={styles.calendarLayer}>
-            <WeekScreen
-              viewportWidth={width}
-              selectedDate={selectedDate}
-              events={selectedDateEvents}
-              allEvents={events}
-              onSelectDate={(date) => selectDate(date, 'week')}
-              onSwipeWeek={moveSelectedWeek}
-              onSelectEvent={openEvent}
-            />
+            <View style={styles.calendarStack}>
+              {transitionFromMode && transitionFromMode !== activeCalendarMode ? (
+                <Animated.View pointerEvents="none" style={[styles.calendarFadeLayer, { opacity: previousCalendarOpacity }]}>
+                  {renderCalendarContent(transitionFromMode)}
+                </Animated.View>
+              ) : null}
+              <Animated.View style={[styles.calendarFadeLayer, transitionFromMode ? { opacity: calendarFade } : styles.visibleCalendarLayer]}>
+                {renderCalendarContent(activeCalendarMode)}
+              </Animated.View>
+            </View>
           </View>
         )}
 
@@ -1081,6 +1112,15 @@ const styles = StyleSheet.create({
   calendarLayer: {
     flex: 1,
   },
+  calendarStack: {
+    flex: 1,
+  },
+  calendarFadeLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  visibleCalendarLayer: {
+    opacity: 1,
+  },
   header: {
     height: 58,
     paddingHorizontal: 30,
@@ -1120,10 +1160,6 @@ const styles = StyleSheet.create({
   headerIconButton: {
     width: 42,
     height: 42,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: '#D8CBC2',
-    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
