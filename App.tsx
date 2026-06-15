@@ -100,16 +100,16 @@ const parseDateKey = (key: string) => {
   return new Date(year, month - 1, day);
 };
 
-const formatMonthTitle = (date: Date) => `${date.getFullYear()}年${date.getMonth() + 1}月`;
+const formatMonthTitle = (date: Date) => `${date.getFullYear()}.${date.getMonth() + 1}`;
 
 const formatDateTitle = (dateKey: string) => {
   const date = parseDateKey(dateKey);
-  return `${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
+  return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}`;
 };
 
 const formatFullDate = (dateKey: string) => {
   const date = parseDateKey(dateKey);
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
+  return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}`;
 };
 
 const monthKey = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}`;
@@ -312,24 +312,21 @@ export default function App() {
     setMode('month');
   };
 
-  const switchCalendarMode = () => {
-    const nextMode: CalendarMode = mode === 'month' ? 'week' : 'month';
+  const changeCalendarMode = (nextMode: CalendarMode) => {
+    if (mode === nextMode) {
+      return;
+    }
 
+    calendarOpacity.stopAnimation();
+    calendarOpacity.setValue(0);
+    setMode(nextMode);
+    setLastCalendarMode(nextMode);
     Animated.timing(calendarOpacity, {
-      toValue: 0,
-      duration: 120,
+      toValue: 1,
+      duration: 150,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
-    }).start(() => {
-      setMode(nextMode);
-      setLastCalendarMode(nextMode);
-      Animated.timing(calendarOpacity, {
-        toValue: 1,
-        duration: 150,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }).start();
-    });
+    }).start();
   };
 
   const saveEvent = () => {
@@ -405,7 +402,7 @@ export default function App() {
           calendarMode={mode === 'week' ? 'week' : 'month'}
           onBack={back}
           onOpenMonthPicker={() => setMonthPickerVisible(true)}
-          onToggleCalendarMode={switchCalendarMode}
+          onChangeCalendarMode={changeCalendarMode}
           onToday={jumpToday}
         />
 
@@ -475,7 +472,7 @@ function Header({
   calendarMode,
   onBack,
   onOpenMonthPicker,
-  onToggleCalendarMode,
+  onChangeCalendarMode,
   onToday,
 }: {
   title: string;
@@ -485,7 +482,7 @@ function Header({
   calendarMode: CalendarMode;
   onBack: () => void;
   onOpenMonthPicker: () => void;
-  onToggleCalendarMode: () => void;
+  onChangeCalendarMode: (mode: CalendarMode) => void;
   onToday: () => void;
 }) {
   return (
@@ -510,12 +507,33 @@ function Header({
 
       {showCalendarActions ? (
         <View style={styles.headerActions}>
-          <Pressable onPress={onToggleCalendarMode} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
-            <CalendarModeIcon mode={calendarMode} />
-          </Pressable>
           <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
             <TodayIcon />
           </Pressable>
+          <View style={styles.modeSegment}>
+            <Pressable
+              onPress={() => onChangeCalendarMode('month')}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.modeSegmentButton,
+                calendarMode === 'month' && styles.modeSegmentButtonActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <MonthIcon />
+            </Pressable>
+            <Pressable
+              onPress={() => onChangeCalendarMode('week')}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.modeSegmentButton,
+                calendarMode === 'week' && styles.modeSegmentButtonActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <WeekIcon />
+            </Pressable>
+          </View>
         </View>
       ) : (
         <View style={styles.headerSide} />
@@ -524,19 +542,22 @@ function Header({
   );
 }
 
-function CalendarModeIcon({ mode }: { mode: CalendarMode }) {
+function MonthIcon() {
   return (
-    <View style={styles.modeIcon}>
-      <View style={styles.modeIconLine} />
-      {mode === 'month' ? (
-        <View style={styles.modeIconGrid}>
-          {Array.from({ length: 6 }, (_, index) => (
-            <View key={index} style={styles.modeIconDot} />
-          ))}
-        </View>
-      ) : (
-        <View style={styles.modeIconWeekLine} />
-      )}
+    <View style={styles.monthGridIcon}>
+      {Array.from({ length: 9 }, (_, index) => (
+        <View key={index} style={styles.monthGridDot} />
+      ))}
+    </View>
+  );
+}
+
+function WeekIcon() {
+  return (
+    <View style={styles.weekLineIcon}>
+      {Array.from({ length: 3 }, (_, index) => (
+        <View key={index} style={styles.weekLine} />
+      ))}
     </View>
   );
 }
@@ -544,8 +565,9 @@ function CalendarModeIcon({ mode }: { mode: CalendarMode }) {
 function TodayIcon() {
   return (
     <View style={styles.todayIcon}>
-      <View style={styles.todayIconTop} />
-      <View style={styles.todayIconDot} />
+      <View style={styles.todayIconRingLeft} />
+      <View style={styles.todayIconRingRight} />
+      <View style={styles.todayIconTopLine} />
     </View>
   );
 }
@@ -683,7 +705,7 @@ function MonthScreen({
 
       <View style={styles.sectionLine} />
 
-      <View style={styles.scheduleList}>
+      <ScrollView style={styles.scheduleScroll} contentContainerStyle={styles.scheduleList} showsVerticalScrollIndicator={false}>
         <Pressable onPress={onOpenWeek} style={({ pressed }) => pressed && styles.pressed}>
           <Text style={styles.selectedDateText}>{formatDateTitle(selectedDate)}</Text>
         </Pressable>
@@ -692,7 +714,7 @@ function MonthScreen({
         ) : (
           events.map((event) => <ScheduleRow key={event.id} event={event} onPress={() => onSelectEvent(event)} />)
         )}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -1084,11 +1106,11 @@ const styles = StyleSheet.create({
     width: 52,
   },
   headerActions: {
-    width: 76,
+    width: 110,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 10,
+    gap: 12,
   },
   headerAction: {
     width: 24,
@@ -1110,39 +1132,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modeIcon: {
-    width: 19,
-    height: 17,
+  modeSegment: {
+    height: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
     borderWidth: 1,
-    borderColor: tokens.secondaryText,
-    borderRadius: 4,
-    paddingHorizontal: 3,
-    paddingTop: 4,
+    borderColor: tokens.hairline,
+    borderRadius: 15,
+    backgroundColor: tokens.surface,
+    padding: 2,
   },
-  modeIconLine: {
-    position: 'absolute',
-    top: 4,
-    left: 3,
-    right: 3,
-    height: 1,
-    backgroundColor: tokens.secondaryText,
+  modeSegmentButton: {
+    width: 28,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  modeIconGrid: {
+  modeSegmentButtonActive: {
+    backgroundColor: tokens.selected,
+  },
+  monthGridIcon: {
+    width: 13,
+    height: 13,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    rowGap: 3,
-    columnGap: 3,
-    paddingTop: 4,
+    rowGap: 2,
+    columnGap: 2,
   },
-  modeIconDot: {
+  monthGridDot: {
     width: 3,
     height: 3,
     borderRadius: 1.5,
     backgroundColor: tokens.secondaryText,
   },
-  modeIconWeekLine: {
-    marginTop: 7,
-    height: 1,
+  weekLineIcon: {
+    width: 14,
+    height: 12,
+    justifyContent: 'space-between',
+  },
+  weekLine: {
+    height: 1.5,
+    borderRadius: 1,
     backgroundColor: tokens.secondaryText,
   },
   todayIcon: {
@@ -1150,24 +1181,31 @@ const styles = StyleSheet.create({
     height: 18,
     borderWidth: 1,
     borderColor: tokens.secondaryText,
-    borderRadius: 5,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 4,
   },
-  todayIconTop: {
+  todayIconRingLeft: {
     position: 'absolute',
-    top: 4,
-    left: 3,
-    right: 3,
+    top: -3,
+    left: 4,
+    width: 1,
+    height: 5,
+    backgroundColor: tokens.secondaryText,
+  },
+  todayIconRingRight: {
+    position: 'absolute',
+    top: -3,
+    right: 4,
+    width: 1,
+    height: 5,
+    backgroundColor: tokens.secondaryText,
+  },
+  todayIconTopLine: {
+    position: 'absolute',
+    top: 5,
+    left: 0,
+    right: 0,
     height: 1,
     backgroundColor: tokens.secondaryText,
-  },
-  todayIconDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: tokens.secondaryText,
-    marginTop: 5,
   },
   monthScreen: {
     flex: 1,
@@ -1242,9 +1280,13 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.hairline,
     marginTop: 14,
   },
+  scheduleScroll: {
+    flex: 1,
+  },
   scheduleList: {
     paddingHorizontal: 30,
     paddingTop: 22,
+    paddingBottom: 88,
   },
   selectedDateText: {
     color: tokens.text,
