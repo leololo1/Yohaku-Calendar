@@ -112,6 +112,8 @@ const formatFullDate = (dateKey: string) => {
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日（${weekdays[date.getDay()]}）`;
 };
 
+const monthKey = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}`;
+
 const addDays = (date: Date, days: number) => {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -200,9 +202,6 @@ export default function App() {
     () => sortEvents(events.filter((event) => event.date === selectedDate)),
     [events, selectedDate],
   );
-  const monthDays = useMemo(() => createMonthDays(visibleMonth, selectedDate, events), [events, selectedDate, visibleMonth]);
-  const previousMonthDays = useMemo(() => createMonthDays(addMonths(visibleMonth, -1), selectedDate, events), [events, selectedDate, visibleMonth]);
-  const nextMonthDays = useMemo(() => createMonthDays(addMonths(visibleMonth, 1), selectedDate, events), [events, selectedDate, visibleMonth]);
 
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
@@ -414,10 +413,11 @@ export default function App() {
           <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
             <MonthScreen
               compact={compact}
-            viewportWidth={width}
-            monthPages={[previousMonthDays, monthDays, nextMonthDays]}
-            events={selectedDateEvents}
-            selectedDate={selectedDate}
+              viewportWidth={width}
+              visibleMonth={visibleMonth}
+              allEvents={events}
+              events={selectedDateEvents}
+              selectedDate={selectedDate}
               onSelectDate={(date) => selectDate(date)}
               onSwipeMonth={moveVisibleMonth}
               onOpenWeek={() => {
@@ -553,7 +553,8 @@ function TodayIcon() {
 function MonthScreen({
   compact,
   viewportWidth,
-  monthPages,
+  visibleMonth,
+  allEvents,
   events,
   selectedDate,
   onSelectDate,
@@ -563,7 +564,8 @@ function MonthScreen({
 }: {
   compact: boolean;
   viewportWidth: number;
-  monthPages: CalendarDay[][];
+  visibleMonth: Date;
+  allEvents: CalendarEvent[];
   events: CalendarEvent[];
   selectedDate: string;
   onSelectDate: (date: Date) => void;
@@ -571,10 +573,31 @@ function MonthScreen({
   onOpenWeek: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
-  const [slideX] = useState(() => new Animated.Value(0));
+  const pageBuffer = 18;
+  const pageOffsets = useMemo(() => Array.from({ length: pageBuffer * 2 + 1 }, (_, index) => index - pageBuffer), []);
+  const [anchorMonth, setAnchorMonth] = useState(visibleMonth);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [slideX] = useState(() => new Animated.Value(-pageBuffer * viewportWidth));
+  const currentMonth = addMonths(anchorMonth, pageIndex);
+  const currentMonthKey = monthKey(currentMonth);
+  const currentPageX = -(pageBuffer + pageIndex) * viewportWidth;
+  const monthPages = useMemo(
+    () => pageOffsets.map((offset) => createMonthDays(addMonths(anchorMonth, offset), selectedDate, allEvents)),
+    [allEvents, anchorMonth, pageOffsets, selectedDate],
+  );
+
+  useEffect(() => {
+    if (monthKey(visibleMonth) === currentMonthKey) {
+      return;
+    }
+
+    setAnchorMonth(visibleMonth);
+    setPageIndex(0);
+    slideX.setValue(-pageBuffer * viewportWidth);
+  }, [currentMonthKey, slideX, viewportWidth, visibleMonth]);
 
   const slideMonth = (amount: number) => {
-    const targetX = amount > 0 ? -viewportWidth : viewportWidth;
+    const targetX = -(pageBuffer + pageIndex + amount) * viewportWidth;
 
     Animated.timing(slideX, {
       toValue: targetX,
@@ -582,14 +605,14 @@ function MonthScreen({
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => {
+      setPageIndex((current) => current + amount);
       onSwipeMonth(amount);
-      slideX.setValue(0);
     });
   };
 
   const returnMonth = () => {
     Animated.timing(slideX, {
-      toValue: 0,
+      toValue: currentPageX,
       duration: 170,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
@@ -601,7 +624,7 @@ function MonthScreen({
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
         onPanResponderMove: (_, gesture) => {
-          slideX.setValue(gesture.dx);
+          slideX.setValue(currentPageX + gesture.dx);
         },
         onPanResponderRelease: (_, gesture) => {
           if (gesture.dx <= -viewportWidth * 0.22 || gesture.vx < -0.45) {
@@ -618,13 +641,21 @@ function MonthScreen({
         },
         onPanResponderTerminate: returnMonth,
       }),
-    [returnMonth, slideMonth, slideX, viewportWidth],
+    [currentPageX, returnMonth, slideMonth, slideX, viewportWidth],
   );
 
   return (
     <View style={styles.monthScreen}>
       <View style={styles.horizontalViewport} {...panResponder.panHandlers}>
-        <Animated.View style={[styles.horizontalPages, { width: viewportWidth * 3, transform: [{ translateX: Animated.add(slideX, -viewportWidth) }] }]}>
+        <Animated.View
+          style={[
+            styles.horizontalPages,
+            {
+              width: viewportWidth * monthPages.length,
+              transform: [{ translateX: slideX }],
+            },
+          ]}
+        >
           {monthPages.map((days, pageIndex) => (
             <View key={pageIndex} style={{ width: viewportWidth }}>
               <View style={styles.weekRow}>
@@ -758,10 +789,18 @@ function WeekScreen({
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
   const selected = parseDateKey(selectedDate);
-  const weekStart = startOfWeek(selected);
-  const weekPages = [-1, 0, 1].map((offset) => {
-    const pageStart = addDays(weekStart, offset * 7);
-    const pageSelectedKey = toDateKey(addDays(selected, offset * 7));
+  const pageBuffer = 18;
+  const pageOffsets = useMemo(() => Array.from({ length: pageBuffer * 2 + 1 }, (_, index) => index - pageBuffer), []);
+  const [anchorSelectedDate, setAnchorSelectedDate] = useState(selected);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [slideX] = useState(() => new Animated.Value(-pageBuffer * viewportWidth));
+  const currentSelectedDate = addDays(anchorSelectedDate, pageIndex * 7);
+  const currentSelectedDateKey = toDateKey(currentSelectedDate);
+  const currentPageX = -(pageBuffer + pageIndex) * viewportWidth;
+  const weekPages = useMemo(() => pageOffsets.map((offset) => {
+    const pageSelectedDate = addDays(anchorSelectedDate, offset * 7);
+    const pageStart = startOfWeek(pageSelectedDate);
+    const pageSelectedKey = toDateKey(pageSelectedDate);
 
     return Array.from({ length: 7 }, (_, index) => {
       const date = addDays(pageStart, index);
@@ -772,11 +811,20 @@ function WeekScreen({
         selected: toDateKey(date) === pageSelectedKey,
       };
     });
-  });
-  const [slideX] = useState(() => new Animated.Value(0));
+  }), [anchorSelectedDate, pageOffsets]);
+
+  useEffect(() => {
+    if (toDateKey(selected) === currentSelectedDateKey) {
+      return;
+    }
+
+    setAnchorSelectedDate(selected);
+    setPageIndex(0);
+    slideX.setValue(-pageBuffer * viewportWidth);
+  }, [currentSelectedDateKey, selected, slideX, viewportWidth]);
 
   const slideWeek = (amount: number) => {
-    const targetX = amount > 0 ? -viewportWidth : viewportWidth;
+    const targetX = -(pageBuffer + pageIndex + amount) * viewportWidth;
 
     Animated.timing(slideX, {
       toValue: targetX,
@@ -784,14 +832,14 @@ function WeekScreen({
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => {
+      setPageIndex((current) => current + amount);
       onSwipeWeek(amount);
-      slideX.setValue(0);
     });
   };
 
   const returnWeek = () => {
     Animated.timing(slideX, {
-      toValue: 0,
+      toValue: currentPageX,
       duration: 170,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
@@ -803,7 +851,7 @@ function WeekScreen({
       PanResponder.create({
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
         onPanResponderMove: (_, gesture) => {
-          slideX.setValue(gesture.dx);
+          slideX.setValue(currentPageX + gesture.dx);
         },
         onPanResponderRelease: (_, gesture) => {
           if (gesture.dx <= -viewportWidth * 0.22 || gesture.vx < -0.45) {
@@ -820,13 +868,21 @@ function WeekScreen({
         },
         onPanResponderTerminate: returnWeek,
       }),
-    [returnWeek, slideWeek, slideX, viewportWidth],
+    [currentPageX, returnWeek, slideWeek, slideX, viewportWidth],
   );
 
   return (
     <View style={styles.weekScreen}>
       <View style={styles.weekSwipeArea} {...panResponder.panHandlers}>
-        <Animated.View style={[styles.horizontalPages, { width: viewportWidth * 3, transform: [{ translateX: Animated.add(slideX, -viewportWidth) }] }]}>
+        <Animated.View
+          style={[
+            styles.horizontalPages,
+            {
+              width: viewportWidth * weekPages.length,
+              transform: [{ translateX: slideX }],
+            },
+          ]}
+        >
           {weekPages.map((days, pageIndex) => (
             <View key={pageIndex} style={[styles.dayMiniCalendar, { width: viewportWidth }]}>
               <View style={styles.weekRow}>
