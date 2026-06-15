@@ -51,7 +51,8 @@ type EventDraft = {
 };
 
 const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-const hours = ['8:00', '9:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
+const hours = Array.from({ length: 24 }, (_, index) => `${index}:00`);
+const hourHeight = 52;
 
 const initialEvents: CalendarEvent[] = [
   {
@@ -200,6 +201,8 @@ export default function App() {
     [events, selectedDate],
   );
   const monthDays = useMemo(() => createMonthDays(visibleMonth, selectedDate, events), [events, selectedDate, visibleMonth]);
+  const previousMonthDays = useMemo(() => createMonthDays(addMonths(visibleMonth, -1), selectedDate, events), [events, selectedDate, visibleMonth]);
+  const nextMonthDays = useMemo(() => createMonthDays(addMonths(visibleMonth, 1), selectedDate, events), [events, selectedDate, visibleMonth]);
 
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
@@ -411,10 +414,10 @@ export default function App() {
           <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
             <MonthScreen
               compact={compact}
-              viewportWidth={width}
-              days={monthDays}
-              events={selectedDateEvents}
-              selectedDate={selectedDate}
+            viewportWidth={width}
+            monthPages={[previousMonthDays, monthDays, nextMonthDays]}
+            events={selectedDateEvents}
+            selectedDate={selectedDate}
               onSelectDate={(date) => selectDate(date)}
               onSwipeMonth={moveVisibleMonth}
               onOpenWeek={() => {
@@ -550,7 +553,7 @@ function TodayIcon() {
 function MonthScreen({
   compact,
   viewportWidth,
-  days,
+  monthPages,
   events,
   selectedDate,
   onSelectDate,
@@ -560,7 +563,7 @@ function MonthScreen({
 }: {
   compact: boolean;
   viewportWidth: number;
-  days: CalendarDay[];
+  monthPages: CalendarDay[][];
   events: CalendarEvent[];
   selectedDate: string;
   onSelectDate: (date: Date) => void;
@@ -571,23 +574,16 @@ function MonthScreen({
   const [slideX] = useState(() => new Animated.Value(0));
 
   const slideMonth = (amount: number) => {
-    const exitX = amount > 0 ? -viewportWidth : viewportWidth;
-    const enterX = amount > 0 ? viewportWidth : -viewportWidth;
+    const targetX = amount > 0 ? -viewportWidth : viewportWidth;
 
     Animated.timing(slideX, {
-      toValue: exitX,
+      toValue: targetX,
       duration: 170,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => {
       onSwipeMonth(amount);
-      slideX.setValue(enterX);
-      Animated.timing(slideX, {
-        toValue: 0,
-        duration: 190,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }).start();
+      slideX.setValue(0);
     });
   };
 
@@ -627,26 +623,32 @@ function MonthScreen({
 
   return (
     <View style={styles.monthScreen}>
-      <Animated.View style={{ transform: [{ translateX: slideX }] }} {...panResponder.panHandlers}>
-        <View style={styles.weekRow}>
-          {weekdays.map((weekday) => (
-            <Text key={weekday} style={styles.weekday}>
-              {weekday}
-            </Text>
-          ))}
-        </View>
-
-        <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
-          {days.map((day) => (
-            <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
-              <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
-                <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
+      <View style={styles.horizontalViewport} {...panResponder.panHandlers}>
+        <Animated.View style={[styles.horizontalPages, { width: viewportWidth * 3, transform: [{ translateX: Animated.add(slideX, -viewportWidth) }] }]}>
+          {monthPages.map((days, pageIndex) => (
+            <View key={pageIndex} style={{ width: viewportWidth }}>
+              <View style={styles.weekRow}>
+                {weekdays.map((weekday) => (
+                  <Text key={weekday} style={styles.weekday}>
+                    {weekday}
+                  </Text>
+                ))}
               </View>
-              <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
-            </Pressable>
+
+              <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
+                {days.map((day) => (
+                  <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
+                    <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
+                      <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
+                    </View>
+                    <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
           ))}
-        </View>
-      </Animated.View>
+        </Animated.View>
+      </View>
 
       <View style={styles.sectionLine} />
 
@@ -757,27 +759,33 @@ function WeekScreen({
 }) {
   const selected = parseDateKey(selectedDate);
   const weekStart = startOfWeek(selected);
-  const stripDays = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
+  const weekPages = [-1, 0, 1].map((offset) => {
+    const pageStart = addDays(weekStart, offset * 7);
+    const pageSelectedKey = toDateKey(addDays(selected, offset * 7));
+
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(pageStart, index);
+
+      return {
+        date,
+        key: toDateKey(date),
+        selected: toDateKey(date) === pageSelectedKey,
+      };
+    });
+  });
   const [slideX] = useState(() => new Animated.Value(0));
 
   const slideWeek = (amount: number) => {
-    const exitX = amount > 0 ? -viewportWidth : viewportWidth;
-    const enterX = amount > 0 ? viewportWidth : -viewportWidth;
+    const targetX = amount > 0 ? -viewportWidth : viewportWidth;
 
     Animated.timing(slideX, {
-      toValue: exitX,
+      toValue: targetX,
       duration: 170,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => {
       onSwipeWeek(amount);
-      slideX.setValue(enterX);
-      Animated.timing(slideX, {
-        toValue: 0,
-        duration: 190,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }).start();
+      slideX.setValue(0);
     });
   };
 
@@ -817,47 +825,48 @@ function WeekScreen({
 
   return (
     <View style={styles.weekScreen}>
-      <Animated.View style={[styles.weekPager, { transform: [{ translateX: slideX }] }]} {...panResponder.panHandlers}>
-      <View style={styles.dayMiniCalendar}>
-        <View style={styles.weekRow}>
-          {weekdays.map((weekday) => (
-            <Text key={weekday} style={styles.weekday}>
-              {weekday}
-            </Text>
+      <View style={styles.weekSwipeArea} {...panResponder.panHandlers}>
+        <Animated.View style={[styles.horizontalPages, { width: viewportWidth * 3, transform: [{ translateX: Animated.add(slideX, -viewportWidth) }] }]}>
+          {weekPages.map((days, pageIndex) => (
+            <View key={pageIndex} style={[styles.dayMiniCalendar, { width: viewportWidth }]}>
+              <View style={styles.weekRow}>
+                {weekdays.map((weekday) => (
+                  <Text key={weekday} style={styles.weekday}>
+                    {weekday}
+                  </Text>
+                ))}
+              </View>
+              <View style={styles.dayStrip}>
+                {days.map((day) => (
+                  <Pressable key={day.key} onPress={() => onSelectDate(day.date)} style={styles.dayStripCell}>
+                    <View style={[styles.dayStripCircle, day.selected && styles.selectedDateCircle]}>
+                      <Text style={styles.dayStripText}>{day.date.getDate()}</Text>
+                    </View>
+                    <View style={styles.dotContainer}>{!day.selected && allEvents.some((event) => event.date === day.key) && <View style={styles.eventDot} />}</View>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
           ))}
-        </View>
-        <View style={styles.dayStrip}>
-          {stripDays.map((day) => {
-            const key = toDateKey(day);
-            const selectedDay = key === selectedDate;
-
-            return (
-              <Pressable key={key} onPress={() => onSelectDate(day)} style={styles.dayStripCell}>
-                <View style={[styles.dayStripCircle, selectedDay && styles.selectedDateCircle]}>
-                  <Text style={styles.dayStripText}>{day.getDate()}</Text>
-                </View>
-                <View style={styles.dotContainer}>{!selectedDay && allEvents.some((event) => event.date === key) && <View style={styles.eventDot} />}</View>
-              </Pressable>
-            );
-          })}
-        </View>
+        </Animated.View>
       </View>
 
-      <View style={styles.timeline}>
-        {hours.map((hour) => (
-          <View key={hour} style={styles.hourRow}>
-            <Text style={styles.hourText}>{hour}</Text>
-            <View style={styles.hourLine} />
-          </View>
-        ))}
+      <ScrollView style={styles.timelineScroll} contentContainerStyle={styles.timelineContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.timeline}>
+          {hours.map((hour) => (
+            <View key={hour} style={styles.hourRow}>
+              <Text style={styles.hourText}>{hour}</Text>
+              <View style={styles.hourLine} />
+            </View>
+          ))}
 
-        {events.map((event) => (
-          <TimelineEvent key={event.id} event={event} onPress={() => onSelectEvent(event)} />
-        ))}
+          {events.map((event) => (
+            <TimelineEvent key={event.id} event={event} onPress={() => onSelectEvent(event)} />
+          ))}
 
-        {events.length === 0 ? <Text style={styles.timelineEmpty}>予定はありません</Text> : null}
-      </View>
-      </Animated.View>
+          {events.length === 0 ? <Text style={styles.timelineEmpty}>予定はありません</Text> : null}
+        </View>
+      </ScrollView>
     </View>
   );
 }
@@ -865,8 +874,8 @@ function WeekScreen({
 function TimelineEvent({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
   const start = minutesFromTime(event.start);
   const end = minutesFromTime(event.end);
-  const top = 16 + Math.max(0, ((start - 8 * 60) / 60) * 40);
-  const height = Math.max(38, ((end - start) / 60) * 40);
+  const top = Math.max(0, (start / 60) * hourHeight);
+  const height = Math.max(36, ((end - start) / 60) * hourHeight);
 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.timelineEvent, { top, height }, pressed && styles.pressed]}>
@@ -1107,6 +1116,12 @@ const styles = StyleSheet.create({
   monthScreen: {
     flex: 1,
   },
+  horizontalViewport: {
+    overflow: 'hidden',
+  },
+  horizontalPages: {
+    flexDirection: 'row',
+  },
   weekRow: {
     flexDirection: 'row',
     paddingHorizontal: 30,
@@ -1307,8 +1322,8 @@ const styles = StyleSheet.create({
   weekScreen: {
     flex: 1,
   },
-  weekPager: {
-    flex: 1,
+  weekSwipeArea: {
+    overflow: 'hidden',
   },
   dayMiniCalendar: {
     borderBottomColor: tokens.hairline,
@@ -1338,15 +1353,20 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
-  timeline: {
+  timelineScroll: {
     flex: 1,
+  },
+  timelineContent: {
+    paddingBottom: 52,
+  },
+  timeline: {
+    height: hourHeight * 24,
     position: 'relative',
-    paddingTop: 16,
     paddingLeft: 24,
     paddingRight: 24,
   },
   hourRow: {
-    height: 40,
+    height: hourHeight,
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
@@ -1362,7 +1382,6 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 1,
     backgroundColor: tokens.hairline,
-    marginTop: 5,
   },
   timelineEvent: {
     position: 'absolute',
@@ -1378,11 +1397,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 18,
     fontWeight: '400',
-    marginVertical: 2,
   },
   timelineEmpty: {
     position: 'absolute',
-    top: 84,
+    top: hourHeight * 9,
     left: 74,
     color: tokens.tertiaryText,
     fontSize: 13,
