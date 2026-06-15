@@ -193,7 +193,6 @@ export default function App() {
   const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
   const [storageReady, setStorageReady] = useState(false);
   const [monthPickerVisible, setMonthPickerVisible] = useState(false);
-  const [calendarOpacity] = useState(() => new Animated.Value(1));
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
@@ -317,16 +316,8 @@ export default function App() {
       return;
     }
 
-    calendarOpacity.stopAnimation();
-    calendarOpacity.setValue(0);
     setMode(nextMode);
     setLastCalendarMode(nextMode);
-    Animated.timing(calendarOpacity, {
-      toValue: 1,
-      duration: 150,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start();
   };
 
   const saveEvent = () => {
@@ -407,7 +398,7 @@ export default function App() {
         />
 
         {mode === 'month' && (
-          <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
+          <View style={styles.calendarLayer}>
             <MonthScreen
               compact={compact}
               viewportWidth={width}
@@ -423,11 +414,11 @@ export default function App() {
               }}
               onSelectEvent={openEvent}
             />
-          </Animated.View>
+          </View>
         )}
 
         {mode === 'week' && (
-          <Animated.View style={[styles.calendarLayer, { opacity: calendarOpacity }]}>
+          <View style={styles.calendarLayer}>
             <WeekScreen
               viewportWidth={width}
               selectedDate={selectedDate}
@@ -437,7 +428,7 @@ export default function App() {
               onSwipeWeek={moveSelectedWeek}
               onSelectEvent={openEvent}
             />
-          </Animated.View>
+          </View>
         )}
 
         {mode === 'detail' && selectedEvent && <DetailScreen event={selectedEvent} onEdit={() => openEditForm(selectedEvent)} onDelete={() => deleteEvent(selectedEvent.id)} />}
@@ -1082,16 +1073,16 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
     backgroundColor: tokens.surface,
-    paddingTop: 58,
+    paddingTop: 66,
   },
   pageCompact: {
-    paddingTop: 48,
+    paddingTop: 56,
   },
   calendarLayer: {
     flex: 1,
   },
   header: {
-    height: 50,
+    height: 58,
     paddingHorizontal: 30,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1099,18 +1090,18 @@ const styles = StyleSheet.create({
   },
   monthTitleButton: {
     minWidth: 120,
-    height: 34,
+    height: 42,
     justifyContent: 'center',
   },
   headerSide: {
     width: 52,
   },
   headerActions: {
-    width: 110,
+    width: 132,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 12,
+    gap: 14,
   },
   headerAction: {
     width: 24,
@@ -1121,31 +1112,35 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: tokens.text,
-    fontSize: 17,
-    lineHeight: 22,
+    fontSize: 18,
+    lineHeight: 24,
     fontWeight: '400',
     textAlign: 'left',
   },
   headerIconButton: {
-    width: 28,
-    height: 28,
+    width: 42,
+    height: 42,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#D8CBC2',
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modeSegment: {
-    height: 30,
+    height: 36,
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: tokens.hairline,
-    borderRadius: 15,
-    backgroundColor: tokens.surface,
+    borderRadius: 18,
+    backgroundColor: tokens.subtleSurface,
     padding: 2,
   },
   modeSegmentButton: {
-    width: 28,
-    height: 24,
-    borderRadius: 12,
+    width: 34,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1153,22 +1148,22 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.selected,
   },
   monthGridIcon: {
-    width: 13,
-    height: 13,
+    width: 15,
+    height: 15,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    rowGap: 2,
-    columnGap: 2,
+    rowGap: 2.5,
+    columnGap: 2.5,
   },
   monthGridDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
+    width: 3.2,
+    height: 3.2,
+    borderRadius: 1.6,
     backgroundColor: tokens.secondaryText,
   },
   weekLineIcon: {
-    width: 14,
-    height: 12,
+    width: 16,
+    height: 13,
     justifyContent: 'space-between',
   },
   weekLine: {
@@ -1178,7 +1173,7 @@ const styles = StyleSheet.create({
   },
   todayIcon: {
     width: 18,
-    height: 18,
+    height: 19,
     borderWidth: 1,
     borderColor: tokens.secondaryText,
     borderRadius: 4,
@@ -1219,7 +1214,7 @@ const styles = StyleSheet.create({
   weekRow: {
     flexDirection: 'row',
     paddingHorizontal: 30,
-    paddingTop: 24,
+    paddingTop: 34,
   },
   weekday: {
     flex: 1,
@@ -1233,15 +1228,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     paddingHorizontal: 27,
-    paddingTop: 22,
-    rowGap: 22,
+    paddingTop: 26,
+    rowGap: 26,
   },
   calendarGridCompact: {
-    rowGap: 17,
+    rowGap: 21,
   },
   dateCell: {
     width: `${100 / 7}%`,
-    height: 43,
+    height: 46,
     alignItems: 'center',
   },
   dateCircle: {
@@ -1278,14 +1273,14 @@ const styles = StyleSheet.create({
   sectionLine: {
     height: 1,
     backgroundColor: tokens.hairline,
-    marginTop: 14,
+    marginTop: 24,
   },
   scheduleScroll: {
     flex: 1,
   },
   scheduleList: {
     paddingHorizontal: 30,
-    paddingTop: 22,
+    paddingTop: 26,
     paddingBottom: 88,
   },
   selectedDateText: {
@@ -1296,7 +1291,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   scheduleRow: {
-    minHeight: 64,
+    minHeight: 72,
     borderBottomColor: tokens.hairline,
     borderBottomWidth: 1,
     flexDirection: 'row',
