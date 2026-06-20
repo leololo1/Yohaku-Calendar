@@ -3,13 +3,14 @@
     "name": "Yohaku Calendar",
     "slug": "yohaku-calendar",
     "version": "1.0.0",
+    "icon": "./images/icon/1d1bdf76-0817-463e-b570-5820d229ef4e.png",
     "orientation": "portrait",
     "scheme": "yohakucalendar",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "3",
+      "buildNumber": "4",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -19,13 +20,49 @@
     },
     "extra": {
       "eas": {
-        "projectId": "853ef768-d454-407b-ac5a-004bcd81e1c6"
+        "projectId": "853ef768-d454-407b-ac5a-004bcd81e1c6",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "ExpoWidgetsTarget",
+                  "bundleIdentifier": "yohaku-calendar.ExpoWidgetsTarget",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.yohaku-calendar"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     },
     "plugins": [
       "expo-sqlite",
       "expo-notifications",
       "expo-web-browser",
+      [
+        "expo-widgets",
+        {
+          "bundleIdentifier": "yohaku-calendar.ExpoWidgetsTarget",
+          "groupIdentifier": "group.yohaku-calendar",
+          "widgets": [
+            {
+              "name": "YohakuTodayWidget",
+              "displayName": "今日の予定",
+              "description": "今日の予定を表示します",
+              "contentMarginsDisabled": true,
+              "supportedFamilies": [
+                "systemSmall",
+                "systemMedium"
+              ]
+            }
+          ]
+        }
+      ],
       [
         "react-native-cloud-storage",
         {

@@ -1,15 +1,20 @@
 import 'expo-sqlite/localStorage/install';
 import * as Notifications from 'expo-notifications';
+import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
+import { CloudStorage } from 'react-native-cloud-storage';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import YohakuTodayWidget, { type YohakuTodayWidgetProps } from './widgets/YohakuTodayWidget';
 import {
   Alert,
   Animated,
   Easing,
+  Linking,
   Modal,
   PanResponder,
   Pressable,
   ScrollView,
+  Share,
   Switch,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -73,6 +78,13 @@ type NotificationSettings = {
   soundEnabled: boolean;
 };
 
+type BackupPayload = {
+  version: 1;
+  exportedAt: string;
+  events: CalendarEvent[];
+  notificationSettings: NotificationSettings;
+};
+
 type ScheduleTimelineEntry = {
   event: CalendarEvent;
   start: number;
@@ -89,6 +101,11 @@ type ScheduleTimelineGroup = {
 };
 
 const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+const appStoreAppId = '6780133048';
+const appStoreShareUrl = `https://apps.apple.com/app/id${appStoreAppId}`;
+const appStoreReviewUrl = `itms-apps://itunes.apple.com/app/id${appStoreAppId}?action=write-review`;
+const appStoreReviewFallbackUrl = `${appStoreShareUrl}?action=write-review`;
+const appleStandardEulaUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
 const pickerColumnHeight = 224;
 const pickerItemHeight = 38;
 const schedulePixelsPerMinute = 1.05;
@@ -104,6 +121,12 @@ const notificationOptions: { value: NotificationOption; label: string }[] = [
   { value: 'before30', label: '30分前' },
   { value: 'before60', label: '1時間前' },
 ];
+const switchColors = {
+  trackOff: '#D8D8D4',
+  trackOn: '#4F4F4B',
+  thumbOff: '#FFFFFF',
+  thumbOn: '#FFFFFF',
+};
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -151,7 +174,13 @@ const initialEvents: CalendarEvent[] = [
 
 const eventStorageKey = 'yohaku-calendar-events';
 const notificationSettingsStorageKey = 'yohaku-calendar-notification-settings';
+const notificationPermissionPromptedStorageKey = 'yohaku-calendar-notification-permission-prompted';
+const backupAutoEnabledStorageKey = 'yohaku-calendar-backup-auto-enabled';
+const backupLastBackupAtStorageKey = 'yohaku-calendar-backup-last-at';
+const iCloudBackupDirectory = '/yohaku-calendar';
+const iCloudBackupPath = `${iCloudBackupDirectory}/backup.json`;
 const notificationIdentifierPrefix = 'yohaku-calendar-event-';
+const testNotificationIdentifierPrefix = 'yohaku-calendar-test-';
 const defaultNotificationSettings: NotificationSettings = {
   eventNotificationsEnabled: true,
   soundEnabled: true,
@@ -410,13 +439,31 @@ const eventStartDateTime = (event: CalendarEvent) => {
 const notificationTriggerDate = (event: CalendarEvent, option: Exclude<NotificationOption, 'none'>) =>
   new Date(eventStartDateTime(event).getTime() - notificationOffsets[option] * 60 * 1000);
 
-const ensureNotificationPermission = async () => {
+const promptNotificationSettings = () => {
+  Alert.alert('通知を許可してください', 'iPhoneの設定でYohaku Calendarの通知をオンにしてください。', [
+    { text: 'キャンセル', style: 'cancel' },
+    {
+      text: '設定を開く',
+      onPress: () => {
+        Linking.openSettings().catch(() => {
+          Alert.alert('設定を開けませんでした');
+        });
+      },
+    },
+  ]);
+};
+
+const ensureNotificationPermission = async (showSettingsPrompt = false) => {
   const current = await Notifications.getPermissionsAsync();
   if (current.granted) {
     return true;
   }
 
   const requested = await Notifications.requestPermissionsAsync();
+  if (!requested.granted && showSettingsPrompt) {
+    promptNotificationSettings();
+  }
+
   return requested.granted;
 };
 
@@ -471,6 +518,40 @@ const syncEventNotifications = async (events: CalendarEvent[], settings: Notific
   );
 };
 
+const scheduleTestNotification = async (settings: NotificationSettings) => {
+  if (!settings.eventNotificationsEnabled) {
+    Alert.alert('通知を受け取る設定がオフです');
+    return false;
+  }
+
+  const granted = await ensureNotificationPermission(true);
+  if (!granted) {
+    return false;
+  }
+
+  const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+  await Promise.all(
+    scheduledNotifications
+      .filter((request) => request.identifier.startsWith(testNotificationIdentifierPrefix))
+      .map((request) => Notifications.cancelScheduledNotificationAsync(request.identifier)),
+  );
+
+  await Notifications.scheduleNotificationAsync({
+    identifier: `${testNotificationIdentifierPrefix}${Date.now()}`,
+    content: {
+      title: 'Yohaku Calendar',
+      body: 'テスト通知です',
+      sound: settings.soundEnabled ? 'default' : false,
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+      seconds: 1,
+    },
+  });
+
+  return true;
+};
+
 const nearestMinuteStep = (minute: number) => Math.min(50, Math.max(0, Math.round(minute / 10) * 10));
 
 const emptyDraft = (date: string): EventDraft => ({
@@ -507,6 +588,92 @@ const draftFromEvent = (event: CalendarEvent): EventDraft => ({
   endNotifications: normalizeNotifications(event.endNotifications),
 });
 
+const normalizeBackupEvent = (value: unknown): CalendarEvent | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const event = value as Partial<CalendarEvent>;
+  if (
+    typeof event.id !== 'string' ||
+    typeof event.title !== 'string' ||
+    typeof event.date !== 'string' ||
+    typeof event.start !== 'string' ||
+    typeof event.end !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(event.date) ||
+    (typeof event.endDate === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(event.endDate)) ||
+    !isTime(event.start) ||
+    !isTime(event.end)
+  ) {
+    return null;
+  }
+
+  return {
+    id: event.id,
+    title: event.title,
+    date: event.date,
+    endDate: event.endDate,
+    start: event.start,
+    end: event.end,
+    startNotifications: normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)),
+  };
+};
+
+const normalizeBackupNotificationSettings = (value: unknown): NotificationSettings => {
+  if (!value || typeof value !== 'object') {
+    return defaultNotificationSettings;
+  }
+
+  const settings = value as Partial<NotificationSettings>;
+  return {
+    eventNotificationsEnabled:
+      typeof settings.eventNotificationsEnabled === 'boolean' ? settings.eventNotificationsEnabled : defaultNotificationSettings.eventNotificationsEnabled,
+    soundEnabled: typeof settings.soundEnabled === 'boolean' ? settings.soundEnabled : defaultNotificationSettings.soundEnabled,
+  };
+};
+
+const parseBackupPayload = (rawBackup: string): BackupPayload | null => {
+  try {
+    const parsed = JSON.parse(rawBackup) as Partial<BackupPayload>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.events) || typeof parsed.exportedAt !== 'string') {
+      return null;
+    }
+
+    return {
+      version: 1,
+      exportedAt: parsed.exportedAt,
+      events: parsed.events.map(normalizeBackupEvent).filter((event): event is CalendarEvent => event !== null),
+      notificationSettings: normalizeBackupNotificationSettings(parsed.notificationSettings),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const formatBackupTimestamp = (value: string | null) => {
+  if (!value) {
+    return '未実施';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '未実施';
+  }
+
+  return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const initialTodayState = () => {
+  const today = new Date();
+  const todayKey = toDateKey(today);
+
+  return {
+    today,
+    todayKey,
+    visibleMonth: new Date(today.getFullYear(), today.getMonth(), 1),
+  };
+};
+
 const createMonthDays = (visibleMonth: Date, selectedDate: string, events: CalendarEvent[]): CalendarDay[] => {
   const firstDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
   const lastDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0);
@@ -530,16 +697,60 @@ const createMonthDays = (visibleMonth: Date, selectedDate: string, events: Calen
   });
 };
 
+const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date()): YohakuTodayWidgetProps => {
+  const dateKey = toDateKey(date);
+  const dayEvents = sortEventsForDate(
+    events.filter((event) => eventOccursOnDate(event, dateKey)),
+    dateKey,
+  );
+
+  return {
+    dateLabel: formatShortDateTitle(dateKey),
+    totalCount: dayEvents.length,
+    events: dayEvents.slice(0, 6).map((event) => ({
+      title: event.title,
+      time: event.start,
+    })),
+  };
+};
+
+const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  return Array.from({ length: 8 }, (_, index) => {
+    const entryDate = index === 0 ? now : addDays(todayStart, index);
+
+    return {
+      date: entryDate,
+      props: buildYohakuTodayWidgetProps(events, entryDate),
+    };
+  });
+};
+
+const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
+  try {
+    YohakuTodayWidget.updateSnapshot(buildYohakuTodayWidgetProps(events));
+    YohakuTodayWidget.updateTimeline(buildYohakuTodayWidgetTimeline(events));
+  } catch {
+    // Widget APIs are native-only and can be unavailable in non-native runtimes.
+  }
+};
+
 export default function App() {
+  const [initialCalendarState] = useState(initialTodayState);
   const [mode, setMode] = useState<ViewMode>('month');
   const [lastCalendarMode, setLastCalendarMode] = useState<CalendarMode>('month');
   const [formMode, setFormMode] = useState<FormMode>('add');
-  const [selectedDate, setSelectedDate] = useState('2025-05-20');
-  const [visibleMonth, setVisibleMonth] = useState(new Date(2025, 4, 1));
+  const [selectedDate, setSelectedDate] = useState(initialCalendarState.todayKey);
+  const [visibleMonth, setVisibleMonth] = useState(initialCalendarState.visibleMonth);
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
   const [selectedEventId, setSelectedEventId] = useState(initialEvents[0].id);
-  const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
+  const [draft, setDraft] = useState<EventDraft>(emptyDraft(initialCalendarState.todayKey));
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(defaultNotificationSettings);
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+  const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
   const [monthPickerVisible, setMonthPickerVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
@@ -548,12 +759,18 @@ export default function App() {
   const [notificationPickerVisible, setNotificationPickerVisible] = useState(false);
   const [previousCalendarState, setPreviousCalendarState] = useState<CalendarRenderState | null>(null);
   const [calendarTransitionFade] = useState(() => new Animated.Value(1));
+  const autoBackupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSettingsActionRef = useRef<(() => void) | null>(null);
+  const pendingSettingsActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restoringBackupRef = useRef(false);
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
     const savedNotificationSettings = localStorage.getItem(notificationSettingsStorageKey);
+    const notificationPermissionPrompted = localStorage.getItem(notificationPermissionPromptedStorageKey);
+    const savedLastBackupAt = localStorage.getItem(backupLastBackupAtStorageKey);
 
     if (savedEvents) {
       try {
@@ -578,7 +795,18 @@ export default function App() {
       }
     }
 
+    setAutoBackupEnabled(false);
+    setLastBackupAt(savedLastBackupAt || null);
     setStorageReady(true);
+
+    if (!savedNotificationSettings && notificationPermissionPrompted !== 'true') {
+      localStorage.setItem(notificationPermissionPromptedStorageKey, 'true');
+      ensureNotificationPermission().then((granted) => {
+        if (!granted) {
+          setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: false }));
+        }
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -594,8 +822,37 @@ export default function App() {
       return;
     }
 
+    syncYohakuTodayWidget(events);
+  }, [events, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
     localStorage.setItem(notificationSettingsStorageKey, JSON.stringify(notificationSettings));
   }, [notificationSettings, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(backupAutoEnabledStorageKey, String(autoBackupEnabled));
+  }, [autoBackupEnabled, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    if (lastBackupAt) {
+      localStorage.setItem(backupLastBackupAtStorageKey, lastBackupAt);
+      return;
+    }
+
+    localStorage.removeItem(backupLastBackupAtStorageKey);
+  }, [lastBackupAt, storageReady]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -844,9 +1101,8 @@ export default function App() {
       return;
     }
 
-    const granted = await ensureNotificationPermission();
+    const granted = await ensureNotificationPermission(true);
     if (!granted) {
-      Alert.alert('通知が許可されていません');
       setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: false }));
       return;
     }
@@ -856,6 +1112,260 @@ export default function App() {
 
   const changeNotificationSoundEnabled = (enabled: boolean) => {
     setNotificationSettings((current) => ({ ...current, soundEnabled: enabled }));
+  };
+
+  const testNotification = () => {
+    scheduleTestNotification(notificationSettings).catch(() => {
+      Alert.alert('テスト通知を送信できませんでした');
+    });
+  };
+
+  const runBackupToICloud = async (showAlert = true) => {
+    if (backupBusy) {
+      return false;
+    }
+
+    setBackupBusy(true);
+    try {
+      const available = await CloudStorage.isCloudAvailable();
+      if (!available) {
+        if (showAlert) {
+          Alert.alert('iCloud未接続', 'iCloud Drive が利用できません。端末の iCloud 設定を確認してください。');
+        }
+        return false;
+      }
+
+      const payload: BackupPayload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        events: sortEvents(events),
+        notificationSettings,
+      };
+      const payloadText = JSON.stringify(payload);
+
+      await CloudStorage.mkdir(iCloudBackupDirectory).catch(() => {
+        // Directory may already exist.
+      });
+      await CloudStorage.writeFile(iCloudBackupPath, payloadText);
+      await CloudStorage.triggerSync(iCloudBackupPath).catch(() => {
+        // iCloud sync is eventually consistent; best effort is enough here.
+      });
+
+      let backedUpAt = payload.exportedAt;
+      try {
+        const stat = await CloudStorage.stat(iCloudBackupPath);
+        backedUpAt = stat.mtime.toISOString();
+      } catch {
+        backedUpAt = payload.exportedAt;
+      }
+
+      setLastBackupAt(backedUpAt);
+      if (showAlert) {
+        Alert.alert('バックアップ完了', '現在の予定を iCloud に保存しました。');
+      }
+      return true;
+    } catch {
+      if (showAlert) {
+        Alert.alert('バックアップエラー', 'iCloud へのバックアップに失敗しました。');
+      }
+      return false;
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const changeAutoBackupEnabled = async (enabled: boolean) => {
+    if (!enabled) {
+      setAutoBackupEnabled(false);
+      return;
+    }
+
+    Alert.alert('Pro限定機能です', '自動バックアップはProプランで利用できます。');
+    setAutoBackupEnabled(false);
+  };
+
+  const restoreBackupFromICloud = async () => {
+    if (backupBusy) {
+      return;
+    }
+
+    const available = await CloudStorage.isCloudAvailable();
+    if (!available) {
+      Alert.alert('iCloud未接続', 'iCloud Drive が利用できません。端末の iCloud 設定を確認してください。');
+      return;
+    }
+
+    const exists = await CloudStorage.exists(iCloudBackupPath);
+    if (!exists) {
+      Alert.alert('バックアップなし', 'iCloud に復元できるバックアップがまだありません。');
+      return;
+    }
+
+    Alert.alert('バックアップから復元', '現在の予定を、iCloud に保存された内容で上書きします。よろしいですか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '復元する',
+        style: 'destructive',
+        onPress: async () => {
+          setBackupBusy(true);
+          restoringBackupRef.current = true;
+          try {
+            await CloudStorage.triggerSync(iCloudBackupPath).catch(() => {
+              // Best effort only.
+            });
+            const rawBackup = await CloudStorage.readFile(iCloudBackupPath);
+            const backup = parseBackupPayload(rawBackup);
+            if (!backup) {
+              Alert.alert('復元エラー', 'バックアップデータの形式を読み取れませんでした。');
+              return;
+            }
+
+            const restoredEvents = sortEvents(backup.events);
+            setEvents(restoredEvents);
+            setNotificationSettings(backup.notificationSettings);
+            setSelectedEventId(restoredEvents[0]?.id ?? '');
+            const nextSelectedDate = restoredEvents[0]?.date ?? toDateKey(new Date());
+            setSelectedDate(nextSelectedDate);
+            setVisibleMonth(new Date(parseDateKey(nextSelectedDate).getFullYear(), parseDateKey(nextSelectedDate).getMonth(), 1));
+            setMode('month');
+
+            try {
+              const stat = await CloudStorage.stat(iCloudBackupPath);
+              setLastBackupAt(stat.mtime.toISOString());
+            } catch {
+              setLastBackupAt(backup.exportedAt);
+            }
+
+            Alert.alert('復元完了', 'iCloud バックアップから予定を復元しました。');
+          } catch {
+            Alert.alert('復元エラー', 'iCloud バックアップの復元に失敗しました。');
+          } finally {
+            restoringBackupRef.current = false;
+            setBackupBusy(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    if (!storageReady || !autoBackupEnabled || restoringBackupRef.current) {
+      return;
+    }
+
+    if (autoBackupTimerRef.current) {
+      clearTimeout(autoBackupTimerRef.current);
+    }
+
+    autoBackupTimerRef.current = setTimeout(() => {
+      runBackupToICloud(false).catch(() => {
+        // Manual backup reports errors; automatic backup stays quiet.
+      });
+    }, 1500);
+
+    return () => {
+      if (autoBackupTimerRef.current) {
+        clearTimeout(autoBackupTimerRef.current);
+        autoBackupTimerRef.current = null;
+      }
+    };
+  }, [autoBackupEnabled, events, notificationSettings, storageReady]);
+
+  const runPendingSettingsAction = () => {
+    const action = pendingSettingsActionRef.current;
+    if (!action) {
+      return;
+    }
+
+    pendingSettingsActionRef.current = null;
+    if (pendingSettingsActionTimerRef.current) {
+      clearTimeout(pendingSettingsActionTimerRef.current);
+      pendingSettingsActionTimerRef.current = null;
+    }
+    requestAnimationFrame(action);
+  };
+
+  const closeSettingsThenRun = (action: () => void) => {
+    pendingSettingsActionRef.current = action;
+    setSettingsVisible(false);
+    if (pendingSettingsActionTimerRef.current) {
+      clearTimeout(pendingSettingsActionTimerRef.current);
+    }
+    pendingSettingsActionTimerRef.current = setTimeout(runPendingSettingsAction, 900);
+  };
+
+  const shareApp = () => {
+    closeSettingsThenRun(() => {
+      Share.share({
+        title: 'Yohaku Calendar',
+        message: 'Yohaku Calendar',
+        url: appStoreShareUrl,
+      }).catch(() => {
+        Alert.alert('共有できませんでした');
+      });
+    });
+  };
+
+  const openStoreReview = () => {
+    closeSettingsThenRun(() => {
+      Linking.openURL(appStoreReviewUrl).catch(() => {
+        Linking.openURL(appStoreReviewFallbackUrl).catch(() => {
+          Alert.alert('ストアレビューを開けませんでした');
+        });
+      });
+    });
+  };
+
+  const openTerms = () => {
+    closeSettingsThenRun(() => {
+      void WebBrowser.openBrowserAsync(appleStandardEulaUrl, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
+      }).catch(() => {
+        WebBrowser.openBrowserAsync(appleStandardEulaUrl).catch(() => {
+          Linking.openURL(appleStandardEulaUrl).catch(() => {
+            Alert.alert('利用規約を開けませんでした');
+          });
+        });
+      });
+    });
+  };
+
+  const resetAppData = () => {
+    setSettingsVisible(false);
+    Alert.alert('データ初期化', '登録済みのすべての予定と、通知設定・バックアップ設定を初期状態に戻します。よろしいですか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '初期化する',
+        style: 'destructive',
+        onPress: async () => {
+          const today = new Date();
+          const todayKey = toDateKey(today);
+          localStorage.setItem(notificationPermissionPromptedStorageKey, 'true');
+          const notificationGranted = await ensureNotificationPermission();
+          const nextNotificationSettings: NotificationSettings = {
+            ...defaultNotificationSettings,
+            eventNotificationsEnabled: notificationGranted,
+          };
+
+          setEvents([]);
+          setNotificationSettings(nextNotificationSettings);
+          setAutoBackupEnabled(false);
+          setLastBackupAt(null);
+          setSelectedEventId('');
+          setSelectedDate(todayKey);
+          setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+          setDraft(emptyDraft(todayKey));
+          setFormMode('add');
+          setMode('month');
+          setMonthPickerVisible(false);
+          setDatePickerTarget(null);
+          setTimePickerTarget(null);
+          setNotificationPickerVisible(false);
+          await cancelYohakuScheduledNotifications();
+          Alert.alert('初期化完了', 'データを初期状態に戻しました。');
+        },
+      },
+    ]);
   };
 
   return (
@@ -913,10 +1423,24 @@ export default function App() {
             soundEnabled={notificationSettings.soundEnabled}
             onEventNotificationsChange={changeEventNotificationsEnabled}
             onSoundChange={changeNotificationSoundEnabled}
+            onTestNotification={testNotification}
           />
         )}
 
-        {mode === 'backup' && <BackupScreen />}
+        {mode === 'backup' && (
+          <BackupScreen
+            autoBackupEnabled={autoBackupEnabled}
+            lastBackupAt={lastBackupAt}
+            busy={backupBusy}
+            onAutoBackupChange={changeAutoBackupEnabled}
+            onRunBackup={() => {
+              void runBackupToICloud();
+            }}
+            onRestoreBackup={() => {
+              void restoreBackupFromICloud();
+            }}
+          />
+        )}
 
         {mode === 'month' && (
           <Pressable onPress={openAddForm} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
@@ -937,6 +1461,7 @@ export default function App() {
         <SettingsSheet
           visible={settingsVisible}
           onClose={() => setSettingsVisible(false)}
+          onDismiss={runPendingSettingsAction}
           onOpenPro={() => {
             setSettingsVisible(false);
             setMode('pro');
@@ -949,6 +1474,10 @@ export default function App() {
             setSettingsVisible(false);
             setMode('backup');
           }}
+          onShareApp={shareApp}
+          onOpenStoreReview={openStoreReview}
+          onOpenTerms={openTerms}
+          onResetData={resetAppData}
         />
 
         <DatePicker
@@ -1478,18 +2007,28 @@ const settingsSections = [
 function SettingsSheet({
   visible,
   onClose,
+  onDismiss,
   onOpenPro,
   onOpenNotificationSettings,
   onOpenBackup,
+  onShareApp,
+  onOpenStoreReview,
+  onOpenTerms,
+  onResetData,
 }: {
   visible: boolean;
   onClose: () => void;
+  onDismiss: () => void;
   onOpenPro: () => void;
   onOpenNotificationSettings: () => void;
   onOpenBackup: () => void;
+  onShareApp: () => void;
+  onOpenStoreReview: () => void;
+  onOpenTerms: () => void;
+  onResetData: () => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} onDismiss={onDismiss}>
       <View style={styles.settingsBackdrop}>
         <Pressable style={styles.settingsBackdropPress} onPress={onClose} />
         <View style={styles.settingsSheet}>
@@ -1513,7 +2052,15 @@ function SettingsSheet({
                           ? onOpenNotificationSettings
                           : sectionIndex === 0 && itemIndex === 2
                             ? onOpenBackup
-                            : undefined
+                            : sectionIndex === 1 && itemIndex === 0
+                              ? onShareApp
+                            : sectionIndex === 1 && itemIndex === 1
+                              ? onOpenStoreReview
+                              : sectionIndex === 2 && itemIndex === 0
+                                ? onOpenTerms
+                                : sectionIndex === 3 && itemIndex === 0
+                                  ? onResetData
+                                  : undefined
                     }
                   />
                 ))}
@@ -1544,20 +2091,8 @@ const proFeatures = [
     description: 'すっきりとした体験を提供します。',
   },
   {
-    title: 'iCloudバックアップ',
-    description: '大切な予定を安全に保存します。',
-  },
-  {
-    title: '通知の詳細設定',
-    description: '自分に合った受け取り方に調整できます。',
-  },
-  {
-    title: 'カレンダーの高度なカスタマイズ',
-    description: '色や表示方法をより細かく設定できます。',
-  },
-  {
-    title: '今後のPro機能',
-    description: '新しい機能をいち早くご利用いただけます。',
+    title: 'iCloudの自動バックアップ',
+    description: '大切な予定を自動で安全に保存します。',
   },
 ];
 
@@ -1616,11 +2151,13 @@ function NotificationSettingsScreen({
   soundEnabled,
   onEventNotificationsChange,
   onSoundChange,
+  onTestNotification,
 }: {
   eventNotificationsEnabled: boolean;
   soundEnabled: boolean;
   onEventNotificationsChange: (value: boolean) => void;
   onSoundChange: (value: boolean) => void;
+  onTestNotification: () => void;
 }) {
   return (
     <ScrollView style={styles.notificationSettingsScreen} contentContainerStyle={styles.notificationSettingsContent} showsVerticalScrollIndicator={false}>
@@ -1641,7 +2178,7 @@ function NotificationSettingsScreen({
       </View>
 
       <View style={styles.notificationSettingsGroup}>
-        <NotificationSettingRow title="通知をテスト" />
+        <NotificationSettingRow title="通知をテスト" onPress={onTestNotification} />
       </View>
     </ScrollView>
   );
@@ -1663,18 +2200,18 @@ function NotificationToggleRow({
         <Switch
           value={value}
           onValueChange={onValueChange}
-          trackColor={{ false: '#D8D8D4', true: '#D8D8D4' }}
-          thumbColor={tokens.surface}
-          ios_backgroundColor="#D8D8D4"
+          trackColor={{ false: switchColors.trackOff, true: switchColors.trackOn }}
+          thumbColor={value ? switchColors.thumbOn : switchColors.thumbOff}
+          ios_backgroundColor={switchColors.trackOff}
         />
       </View>
     </View>
   );
 }
 
-function NotificationSettingRow({ title, value }: { title: string; value?: string }) {
+function NotificationSettingRow({ title, value, onPress }: { title: string; value?: string; onPress?: () => void }) {
   return (
-    <Pressable style={({ pressed }) => [styles.notificationSettingsRow, pressed && styles.pressed]}>
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.notificationSettingsRow, pressed && styles.pressed]}>
       <Text style={styles.notificationSettingsTitle}>{title}</Text>
       <View style={styles.notificationSettingsValueGroup}>
         {value ? <Text style={styles.notificationSettingsValue}>{value}</Text> : null}
@@ -1684,18 +2221,28 @@ function NotificationSettingRow({ title, value }: { title: string; value?: strin
   );
 }
 
-function BackupScreen() {
-  const [iCloudBackupEnabled, setICloudBackupEnabled] = useState(false);
-  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
-
+function BackupScreen({
+  autoBackupEnabled,
+  lastBackupAt,
+  busy,
+  onAutoBackupChange,
+  onRunBackup,
+  onRestoreBackup,
+}: {
+  autoBackupEnabled: boolean;
+  lastBackupAt: string | null;
+  busy: boolean;
+  onAutoBackupChange: (value: boolean) => void;
+  onRunBackup: () => void;
+  onRestoreBackup: () => void;
+}) {
   return (
     <ScrollView style={styles.backupScreen} contentContainerStyle={styles.backupContent} showsVerticalScrollIndicator={false}>
       <View style={styles.backupList}>
-        <BackupToggleRow title="iCloudバックアップ" value={iCloudBackupEnabled} onValueChange={setICloudBackupEnabled} />
-        <BackupToggleRow title="自動バックアップ" value={autoBackupEnabled} onValueChange={setAutoBackupEnabled} />
-        <BackupValueRow title="最終バックアップ" value="2026.6.18 22:14" />
-        <BackupActionRow title="今すぐバックアップ" />
-        <BackupActionRow title="バックアップから復元" />
+        <BackupToggleRow title="自動バックアップ" value={autoBackupEnabled} onValueChange={onAutoBackupChange} disabled={busy} />
+        <BackupActionRow title="今すぐバックアップ" onPress={onRunBackup} disabled={busy} />
+        <BackupActionRow title="バックアップから復元" onPress={onRestoreBackup} disabled={busy} />
+        <Text style={styles.backupDescriptionText}>最終バックアップ {formatBackupTimestamp(lastBackupAt)}</Text>
       </View>
 
       <View style={styles.backupDescription}>
@@ -1710,10 +2257,12 @@ function BackupToggleRow({
   title,
   value,
   onValueChange,
+  disabled = false,
 }: {
   title: string;
   value: boolean;
   onValueChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <View style={styles.backupRow}>
@@ -1722,27 +2271,19 @@ function BackupToggleRow({
         <Switch
           value={value}
           onValueChange={onValueChange}
-          trackColor={{ false: '#D8D8D4', true: '#D8D8D4' }}
-          thumbColor={tokens.surface}
-          ios_backgroundColor="#D8D8D4"
+          disabled={disabled}
+          trackColor={{ false: switchColors.trackOff, true: switchColors.trackOn }}
+          thumbColor={value ? switchColors.thumbOn : switchColors.thumbOff}
+          ios_backgroundColor={switchColors.trackOff}
         />
       </View>
     </View>
   );
 }
 
-function BackupValueRow({ title, value }: { title: string; value: string }) {
+function BackupActionRow({ title, onPress, disabled = false }: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <View style={styles.backupRow}>
-      <Text style={styles.backupRowTitle}>{title}</Text>
-      <Text style={styles.backupRowValue}>{value}</Text>
-    </View>
-  );
-}
-
-function BackupActionRow({ title }: { title: string }) {
-  return (
-    <Pressable style={({ pressed }) => [styles.backupRow, pressed && styles.pressed]}>
+    <Pressable disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.backupRow, disabled && styles.disabled, pressed && styles.pressed]}>
       <Text style={styles.backupRowTitle}>{title}</Text>
       <Text style={styles.backupChevron}>›</Text>
     </Pressable>
@@ -3082,6 +3623,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   backupContent: {
+    flexGrow: 1,
     paddingHorizontal: 30,
     paddingTop: 96,
     paddingBottom: 64,
@@ -3106,13 +3648,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  backupRowValue: {
-    color: tokens.secondaryText,
-    fontSize: 17,
-    lineHeight: 24,
-    fontWeight: '400',
-    fontVariant: ['tabular-nums'],
-  },
   backupChevron: {
     color: tokens.tertiaryText,
     fontSize: 34,
@@ -3120,6 +3655,7 @@ const styles = StyleSheet.create({
     fontWeight: '200',
   },
   backupDescription: {
+    marginTop: 'auto',
     paddingTop: 42,
     gap: 12,
   },
@@ -3358,5 +3894,8 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.58,
+  },
+  disabled: {
+    opacity: 0.38,
   },
 });
