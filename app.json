@@ -27,7 +27,7 @@
               "appExtensions": [
                 {
                   "targetName": "ExpoWidgetsTarget",
-                  "bundleIdentifier": "yohaku-calendar.ExpoWidgetsTarget",
+                  "bundleIdentifier": "yohaku-calendar-widget",
                   "entitlements": {
                     "com.apple.security.application-groups": [
                       "group.yohaku-calendar"
@@ -47,7 +47,7 @@
       [
         "expo-widgets",
         {
-          "bundleIdentifier": "yohaku-calendar.ExpoWidgetsTarget",
+          "bundleIdentifier": "yohaku-calendar-widget",
           "groupIdentifier": "group.yohaku-calendar",
           "widgets": [
             {
