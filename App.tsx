@@ -1,6 +1,7 @@
 import 'expo-sqlite/localStorage/install';
+import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -9,26 +10,36 @@ import {
   PanResponder,
   Pressable,
   ScrollView,
+  Switch,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  StyleProp,
   StyleSheet,
   Text,
   TextInput,
   useWindowDimensions,
   View,
+  ViewStyle,
 } from 'react-native';
 
-type CalendarMode = 'month' | 'week';
-type ViewMode = CalendarMode | 'detail' | 'form';
+type CalendarMode = 'month';
+type ViewMode = CalendarMode | 'form' | 'pro' | 'notificationSettings' | 'backup';
 type FormMode = 'add' | 'edit';
+type NotificationOption = 'none' | 'atStart' | 'before3' | 'before5' | 'before10' | 'before30' | 'before60';
+type TimeFieldKey = 'start' | 'end';
 
 type CalendarEvent = {
   id: string;
   title: string;
   date: string;
+  endDate?: string;
   start: string;
   end: string;
   location?: string;
   memo?: string;
   notification?: string;
+  startNotifications?: NotificationOption[];
+  endNotifications?: NotificationOption[];
 };
 
 type CalendarDay = {
@@ -36,23 +47,72 @@ type CalendarDay = {
   date: Date;
   label: string;
   muted: boolean;
-  hasEvent: boolean;
+  eventCount: number;
   selected: boolean;
+};
+
+type CalendarRenderState = {
+  mode: CalendarMode;
+  selectedDate: string;
+  visibleMonth: Date;
+  events: CalendarEvent[];
 };
 
 type EventDraft = {
   title: string;
   date: string;
+  endDate: string;
   start: string;
   end: string;
-  location: string;
-  memo: string;
-  notification: string;
+  startNotifications: NotificationOption[];
+  endNotifications: NotificationOption[];
+};
+
+type NotificationSettings = {
+  eventNotificationsEnabled: boolean;
+  soundEnabled: boolean;
+};
+
+type ScheduleTimelineEntry = {
+  event: CalendarEvent;
+  start: number;
+  end: number;
+  column: number;
+};
+
+type ScheduleTimelineGroup = {
+  id: string;
+  start: number;
+  end: number;
+  columnCount: number;
+  entries: ScheduleTimelineEntry[];
 };
 
 const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
-const hours = Array.from({ length: 24 }, (_, index) => `${index}:00`);
-const hourHeight = 52;
+const pickerColumnHeight = 224;
+const pickerItemHeight = 38;
+const schedulePixelsPerMinute = 1.05;
+const scheduleMinCardHeight = 58;
+const scheduleDefaultVisualDuration = 60;
+const scheduleTimelineGroupGap = 4;
+const notificationOptions: { value: NotificationOption; label: string }[] = [
+  { value: 'none', label: 'なし' },
+  { value: 'atStart', label: '開始時刻' },
+  { value: 'before3', label: '3分前' },
+  { value: 'before5', label: '5分前' },
+  { value: 'before10', label: '10分前' },
+  { value: 'before30', label: '30分前' },
+  { value: 'before60', label: '1時間前' },
+];
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const initialEvents: CalendarEvent[] = [
   {
@@ -90,6 +150,20 @@ const initialEvents: CalendarEvent[] = [
 ];
 
 const eventStorageKey = 'yohaku-calendar-events';
+const notificationSettingsStorageKey = 'yohaku-calendar-notification-settings';
+const notificationIdentifierPrefix = 'yohaku-calendar-event-';
+const defaultNotificationSettings: NotificationSettings = {
+  eventNotificationsEnabled: true,
+  soundEnabled: true,
+};
+const notificationOffsets: Record<Exclude<NotificationOption, 'none'>, number> = {
+  atStart: 0,
+  before3: 3,
+  before5: 5,
+  before10: 10,
+  before30: 30,
+  before60: 60,
+};
 
 const pad = (value: number) => value.toString().padStart(2, '0');
 
@@ -107,9 +181,23 @@ const formatDateTitle = (dateKey: string) => {
   return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}`;
 };
 
+const formatShortDateTitle = (dateKey: string) => {
+  const date = parseDateKey(dateKey);
+  return `${date.getMonth() + 1}.${date.getDate()}`;
+};
+
 const formatFullDate = (dateKey: string) => {
   const date = parseDateKey(dateKey);
   return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}`;
+};
+
+const parseValidDateKey = (dateKey: string, fallback: Date) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return fallback;
+  }
+
+  const date = parseDateKey(dateKey);
+  return Number.isNaN(date.getTime()) ? fallback : date;
 };
 
 const monthKey = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}`;
@@ -121,8 +209,6 @@ const addDays = (date: Date, days: number) => {
 };
 
 const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1);
-
-const startOfWeek = (date: Date) => addDays(date, -date.getDay());
 
 const daysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
 
@@ -140,24 +226,285 @@ const isTime = (time: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
 const sortEvents = (items: CalendarEvent[]) =>
   [...items].sort((first, second) => minutesFromTime(first.start) - minutesFromTime(second.start));
 
+const formatTimelineTime = (minutes: number) => `${Math.floor(minutes / 60)}:${pad(minutes % 60)}`;
+
+const eventEndDate = (event: CalendarEvent) => event.endDate ?? event.date;
+
+const isMultiDayEvent = (event: CalendarEvent) => eventEndDate(event) !== event.date;
+
+const eventOccursOnDate = (event: CalendarEvent, dateKey: string) => event.date <= dateKey && dateKey <= eventEndDate(event);
+
+const eventDuration = (event: CalendarEvent) => Math.max(10, minutesFromTime(event.end) - minutesFromTime(event.start));
+
+const visualDurationForMultiDayEvent = (events: CalendarEvent[], dateKey: string, eventId: string) => {
+  const sameDayEvent = sortEvents(events).find((event) => event.id !== eventId && event.date === dateKey && eventEndDate(event) === dateKey);
+  return sameDayEvent ? eventDuration(sameDayEvent) : scheduleDefaultVisualDuration;
+};
+
+const eventTimelineSegment = (event: CalendarEvent, dateKey: string, visualDuration = scheduleDefaultVisualDuration) => {
+  const startsToday = event.date === dateKey;
+  const endsToday = eventEndDate(event) === dateKey;
+  const start = startsToday ? minutesFromTime(event.start) : 0;
+  const spansMultipleDays = isMultiDayEvent(event);
+  const end = spansMultipleDays ? start + visualDuration : endsToday ? minutesFromTime(event.end) : 24 * 60;
+
+  return {
+    start,
+    end: Math.max(start + 10, end),
+  };
+};
+
+const sortEventsForDate = (items: CalendarEvent[], dateKey: string) =>
+  [...items].sort((first, second) => {
+    const firstSegment = eventTimelineSegment(first, dateKey);
+    const secondSegment = eventTimelineSegment(second, dateKey);
+    return firstSegment.start - secondSegment.start || firstSegment.end - secondSegment.end;
+  });
+
+const formatScheduleEndLabel = (event: CalendarEvent) => {
+  const endDate = eventEndDate(event);
+  return endDate === event.date ? `~${event.end}` : `~${formatShortDateTitle(endDate)}\n${event.end}`;
+};
+
+const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): ScheduleTimelineGroup[] => {
+  const sortedEvents = sortEventsForDate(events, dateKey);
+  const groups: ScheduleTimelineGroup[] = [];
+  const multiDayEvents = sortedEvents.filter(isMultiDayEvent);
+  const singleDayEvents = sortedEvents.filter((event) => !isMultiDayEvent(event));
+
+  if (multiDayEvents.length > 0 && singleDayEvents.length > 0) {
+    const singleDaySegments = singleDayEvents.map((event) => ({
+      event,
+      ...eventTimelineSegment(event, dateKey),
+    }));
+    const singleDayGroups: ScheduleTimelineGroup[] = [];
+
+    singleDaySegments.forEach((entry) => {
+      const lastGroup = singleDayGroups[singleDayGroups.length - 1];
+
+      if (!lastGroup || entry.start >= lastGroup.end) {
+        singleDayGroups.push({
+          id: entry.event.id,
+          start: entry.start,
+          end: entry.end,
+          columnCount: 1,
+          entries: [{ event: entry.event, start: entry.start, end: entry.end, column: 0 }],
+        });
+        return;
+      }
+
+      lastGroup.end = Math.max(lastGroup.end, entry.end);
+      lastGroup.id = `${lastGroup.id}-${entry.event.id}`;
+      lastGroup.entries.push({ event: entry.event, start: entry.start, end: entry.end, column: 0 });
+    });
+
+    const normalizedSingleDayGroups = singleDayGroups.map((group) => {
+      const columnEnds: number[] = [];
+      const singleDayEntries = group.entries.map((entry) => {
+        const column = columnEnds.findIndex((columnEnd) => entry.start >= columnEnd);
+        const nextColumn = column === -1 ? columnEnds.length : column;
+        columnEnds[nextColumn] = entry.end;
+
+        return {
+          ...entry,
+          column: multiDayEvents.length + nextColumn,
+        };
+      });
+
+      return {
+        ...group,
+        columnCount: multiDayEvents.length + Math.max(1, columnEnds.length),
+        entries: singleDayEntries,
+      };
+    });
+
+    const maxColumnCount = Math.max(...normalizedSingleDayGroups.map((group) => group.columnCount));
+
+    return normalizedSingleDayGroups.map((group) => ({
+      ...group,
+      columnCount: maxColumnCount,
+    }));
+  }
+
+  sortedEvents.forEach((event) => {
+    const visualDuration = isMultiDayEvent(event) ? visualDurationForMultiDayEvent(sortedEvents, dateKey, event.id) : scheduleDefaultVisualDuration;
+    const { start, end } = eventTimelineSegment(event, dateKey, visualDuration);
+    const lastGroup = groups[groups.length - 1];
+
+    if (!lastGroup || start >= lastGroup.end) {
+      groups.push({
+        id: event.id,
+        start,
+        end,
+        columnCount: 1,
+        entries: [{ event, start, end, column: 0 }],
+      });
+      return;
+    }
+
+    lastGroup.end = Math.max(lastGroup.end, end);
+    lastGroup.id = `${lastGroup.id}-${event.id}`;
+    lastGroup.entries.push({ event, start, end, column: 0 });
+  });
+
+  return groups.map((group) => {
+    const columnEnds: number[] = [];
+    const entries = group.entries.map((entry) => {
+      const column = columnEnds.findIndex((columnEnd) => entry.start >= columnEnd);
+      const nextColumn = column === -1 ? columnEnds.length : column;
+      columnEnds[nextColumn] = entry.end;
+
+      return {
+        ...entry,
+        column: nextColumn,
+      };
+    });
+
+    return {
+      ...group,
+      columnCount: Math.max(1, columnEnds.length),
+      entries,
+    };
+  });
+};
+
+const normalizeNotifications = (values?: NotificationOption[]) => {
+  if (!values || values.length === 0 || values.includes('none')) {
+    return ['none'] as NotificationOption[];
+  }
+
+  return values;
+};
+
+const notificationLabel = (value: NotificationOption, atTimeLabel = '開始時刻') => {
+  if (value === 'atStart') {
+    return atTimeLabel;
+  }
+
+  return notificationOptions.find((option) => option.value === value)?.label ?? value;
+};
+
+const formatNotificationSummary = (values: NotificationOption[], atTimeLabel = '開始時刻') =>
+  normalizeNotifications(values).map((value) => notificationLabel(value, atTimeLabel)).join(', ');
+
+const notificationsFromLegacy = (notification?: string) => {
+  const matched = notificationOptions.find((option) => option.label === notification);
+  return matched && matched.value !== 'none' ? [matched.value] : (['none'] as NotificationOption[]);
+};
+
+const notificationIdentifier = (eventId: string, option: Exclude<NotificationOption, 'none'>) =>
+  `${notificationIdentifierPrefix}${eventId}-${option}`;
+
+const activeNotificationOptions = (event: CalendarEvent) =>
+  normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)).filter(
+    (option): option is Exclude<NotificationOption, 'none'> => option !== 'none',
+  );
+
+const eventStartDateTime = (event: CalendarEvent) => {
+  const date = parseDateKey(event.date);
+  const start = minutesFromTime(event.start);
+  date.setHours(Math.floor(start / 60), start % 60, 0, 0);
+  return date;
+};
+
+const notificationTriggerDate = (event: CalendarEvent, option: Exclude<NotificationOption, 'none'>) =>
+  new Date(eventStartDateTime(event).getTime() - notificationOffsets[option] * 60 * 1000);
+
+const ensureNotificationPermission = async () => {
+  const current = await Notifications.getPermissionsAsync();
+  if (current.granted) {
+    return true;
+  }
+
+  const requested = await Notifications.requestPermissionsAsync();
+  return requested.granted;
+};
+
+const cancelYohakuScheduledNotifications = async () => {
+  const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+  await Promise.all(
+    scheduledNotifications
+      .filter((request) => request.identifier.startsWith(notificationIdentifierPrefix))
+      .map((request) => Notifications.cancelScheduledNotificationAsync(request.identifier)),
+  );
+};
+
+const syncEventNotifications = async (events: CalendarEvent[], settings: NotificationSettings) => {
+  await cancelYohakuScheduledNotifications();
+
+  if (!settings.eventNotificationsEnabled) {
+    return;
+  }
+
+  const now = Date.now();
+  const schedulableEvents = events
+    .flatMap((event) => activeNotificationOptions(event).map((option) => ({ event, option, triggerDate: notificationTriggerDate(event, option) })))
+    .filter(({ triggerDate }) => triggerDate.getTime() > now + 1000);
+  if (schedulableEvents.length === 0) {
+    return;
+  }
+
+  const granted = await ensureNotificationPermission();
+  if (!granted) {
+    return;
+  }
+
+  await Promise.all(
+    schedulableEvents.map(({ event, option, triggerDate }) =>
+      Notifications.scheduleNotificationAsync({
+        identifier: notificationIdentifier(event.id, option),
+        content: {
+          title: event.title,
+          body: `${formatFullDate(event.date)} ${event.start}`,
+          sound: settings.soundEnabled ? 'default' : false,
+          data: {
+            eventId: event.id,
+            notificationOption: option,
+          },
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: triggerDate,
+        },
+      }),
+    ),
+  );
+};
+
+const nearestMinuteStep = (minute: number) => Math.min(50, Math.max(0, Math.round(minute / 10) * 10));
+
 const emptyDraft = (date: string): EventDraft => ({
   title: '',
   date,
+  endDate: date,
   start: '10:00',
   end: '11:00',
-  location: '',
-  memo: '',
-  notification: '',
+  startNotifications: ['none'],
+  endNotifications: ['none'],
 });
+
+const countEventsOnDate = (events: CalendarEvent[], dateKey: string) => events.filter((event) => eventOccursOnDate(event, dateKey)).length;
+
+const dateOpacityForEventCount = (eventCount: number) => {
+  if (eventCount === 0) {
+    return 0.1;
+  }
+
+  if (eventCount === 1) {
+    return 0.5;
+  }
+
+  return 1;
+};
 
 const draftFromEvent = (event: CalendarEvent): EventDraft => ({
   title: event.title,
   date: event.date,
+  endDate: eventEndDate(event),
   start: event.start,
   end: event.end,
-  location: event.location ?? '',
-  memo: event.memo ?? '',
-  notification: event.notification ?? '',
+  startNotifications: normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)),
+  endNotifications: normalizeNotifications(event.endNotifications),
 });
 
 const createMonthDays = (visibleMonth: Date, selectedDate: string, events: CalendarEvent[]): CalendarDay[] => {
@@ -170,13 +517,14 @@ const createMonthDays = (visibleMonth: Date, selectedDate: string, events: Calen
   return Array.from({ length: totalDays }, (_, index) => {
     const date = addDays(start, index);
     const key = toDateKey(date);
+    const eventCount = countEventsOnDate(events, key);
 
     return {
       key,
       date,
       label: String(date.getDate()),
       muted: date.getMonth() !== visibleMonth.getMonth(),
-      hasEvent: events.some((event) => event.date === key),
+      eventCount,
       selected: key === selectedDate,
     };
   });
@@ -191,21 +539,21 @@ export default function App() {
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
   const [selectedEventId, setSelectedEventId] = useState(initialEvents[0].id);
   const [draft, setDraft] = useState<EventDraft>(emptyDraft('2025-05-20'));
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(defaultNotificationSettings);
   const [storageReady, setStorageReady] = useState(false);
   const [monthPickerVisible, setMonthPickerVisible] = useState(false);
-  const [transitionFromMode, setTransitionFromMode] = useState<CalendarMode | null>(null);
-  const [calendarFade] = useState(() => new Animated.Value(1));
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<TimeFieldKey | null>(null);
+  const [timePickerTarget, setTimePickerTarget] = useState<TimeFieldKey | null>(null);
+  const [notificationPickerVisible, setNotificationPickerVisible] = useState(false);
+  const [previousCalendarState, setPreviousCalendarState] = useState<CalendarRenderState | null>(null);
+  const [calendarTransitionFade] = useState(() => new Animated.Value(1));
   const { width } = useWindowDimensions();
   const compact = width < 380;
 
-  const selectedEvent = events.find((event) => event.id === selectedEventId);
-  const selectedDateEvents = useMemo(
-    () => sortEvents(events.filter((event) => event.date === selectedDate)),
-    [events, selectedDate],
-  );
-
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
+    const savedNotificationSettings = localStorage.getItem(notificationSettingsStorageKey);
 
     if (savedEvents) {
       try {
@@ -216,6 +564,17 @@ export default function App() {
         }
       } catch {
         localStorage.removeItem(eventStorageKey);
+      }
+    }
+
+    if (savedNotificationSettings) {
+      try {
+        setNotificationSettings({
+          ...defaultNotificationSettings,
+          ...(JSON.parse(savedNotificationSettings) as Partial<NotificationSettings>),
+        });
+      } catch {
+        localStorage.removeItem(notificationSettingsStorageKey);
       }
     }
 
@@ -230,27 +589,66 @@ export default function App() {
     localStorage.setItem(eventStorageKey, JSON.stringify(events));
   }, [events, storageReady]);
 
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(notificationSettingsStorageKey, JSON.stringify(notificationSettings));
+  }, [notificationSettings, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    syncEventNotifications(events, notificationSettings).catch(() => {
+      // 通知権限がない環境や未対応環境では、予定保存自体は妨げない。
+    });
+  }, [events, notificationSettings, storageReady]);
+
+  useEffect(() => {
+    if (!previousCalendarState) {
+      return;
+    }
+
+    Animated.timing(calendarTransitionFade, {
+      toValue: 0,
+      duration: 240,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setPreviousCalendarState(null);
+      }
+    });
+  }, [calendarTransitionFade, previousCalendarState]);
+
   const headerTitle = useMemo(() => {
     if (mode === 'month') {
       return formatMonthTitle(visibleMonth);
     }
 
-    if (mode === 'week') {
-      return formatDateTitle(selectedDate);
+    if (mode === 'pro') {
+      return 'Proプラン';
     }
 
-    if (mode === 'form') {
-      return formMode === 'add' ? '予定を追加' : '予定を編集';
+    if (mode === 'notificationSettings') {
+      return '通知設定';
+    }
+
+    if (mode === 'backup') {
+      return 'バックアップ';
     }
 
     return '';
-  }, [formMode, mode, selectedDate, visibleMonth]);
+  }, [mode, visibleMonth]);
 
   const selectDate = (date: Date, nextMode: ViewMode = 'month') => {
     const key = toDateKey(date);
     setSelectedDate(key);
     setVisibleMonth(new Date(date.getFullYear(), date.getMonth(), 1));
-    if (nextMode === 'month' || nextMode === 'week') {
+    if (nextMode === 'month') {
       setLastCalendarMode(nextMode);
     }
     setMode(nextMode);
@@ -269,26 +667,38 @@ export default function App() {
     selectVisibleMonth(addMonths(visibleMonth, amount));
   };
 
-  const moveSelectedWeek = (amount: number) => {
-    selectDate(addDays(parseDateKey(selectedDate), amount * 7), 'week');
+  const currentCalendarState: CalendarRenderState = {
+    mode: 'month',
+    selectedDate,
+    visibleMonth,
+    events,
+  };
+
+  const fadeFromCurrentCalendar = (commit: () => void) => {
+    if (mode !== 'month') {
+      commit();
+      return;
+    }
+
+    calendarTransitionFade.stopAnimation();
+    calendarTransitionFade.setValue(1);
+    setPreviousCalendarState(currentCalendarState);
+    commit();
   };
 
   const openEvent = (event: CalendarEvent) => {
-    if (mode === 'month' || mode === 'week') {
+    if (mode === 'month') {
       setLastCalendarMode(mode);
     }
-    setTransitionFromMode(null);
-    setSelectedEventId(event.id);
     setSelectedDate(event.date);
     setVisibleMonth(new Date(parseDateKey(event.date).getFullYear(), parseDateKey(event.date).getMonth(), 1));
-    setMode('detail');
+    openEditForm(event);
   };
 
   const openAddForm = () => {
-    if (mode === 'month' || mode === 'week') {
+    if (mode === 'month') {
       setLastCalendarMode(mode);
     }
-    setTransitionFromMode(null);
     setFormMode('add');
     setDraft(emptyDraft(selectedDate));
     setMode('form');
@@ -302,45 +712,23 @@ export default function App() {
   };
 
   const back = () => {
-    if (mode === 'detail') {
+    if (mode === 'form') {
       setMode(lastCalendarMode);
       return;
     }
 
-    if (mode === 'form') {
-      setMode(formMode === 'edit' ? 'detail' : lastCalendarMode);
+    if (mode === 'pro' || mode === 'notificationSettings' || mode === 'backup') {
+      setMode('month');
       return;
     }
 
     setMode('month');
   };
 
-  const changeCalendarMode = (nextMode: CalendarMode) => {
-    if (mode === nextMode) {
-      return;
-    }
-
-    const currentMode = mode === 'week' ? 'week' : 'month';
-    calendarFade.stopAnimation();
-    calendarFade.setValue(0);
-    setTransitionFromMode(currentMode);
-    setMode(nextMode);
-    setLastCalendarMode(nextMode);
-    Animated.timing(calendarFade, {
-      toValue: 1,
-      duration: 180,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) {
-        setTransitionFromMode(null);
-      }
-    });
-  };
-
   const saveEvent = () => {
     const title = draft.title.trim();
     const date = draft.date.trim();
+    const endDate = draft.endDate.trim();
     const start = draft.start.trim();
     const end = draft.end.trim();
 
@@ -349,7 +737,7 @@ export default function App() {
       return;
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
       Alert.alert('日付は YYYY-MM-DD で入力してください');
       return;
     }
@@ -359,7 +747,7 @@ export default function App() {
       return;
     }
 
-    if (minutesFromTime(start) >= minutesFromTime(end)) {
+    if (endDate < date || (endDate === date && minutesFromTime(start) >= minutesFromTime(end))) {
       Alert.alert('終了時刻は開始時刻より後にしてください');
       return;
     }
@@ -368,11 +756,10 @@ export default function App() {
       id: formMode === 'add' ? `event-${Date.now()}` : selectedEventId,
       title,
       date,
+      endDate,
       start,
       end,
-      location: draft.location.trim() || undefined,
-      memo: draft.memo.trim() || undefined,
-      notification: draft.notification.trim() || undefined,
+      startNotifications: normalizeNotifications(draft.startNotifications),
     };
 
     setEvents((current) => {
@@ -385,51 +772,91 @@ export default function App() {
     setSelectedDate(savedEvent.date);
     setVisibleMonth(new Date(parseDateKey(savedEvent.date).getFullYear(), parseDateKey(savedEvent.date).getMonth(), 1));
     setSelectedEventId(savedEvent.id);
-    setMode('detail');
+    setMode('month');
   };
 
-  const deleteEvent = (eventId: string) => {
-    setEvents((current) => current.filter((event) => event.id !== eventId));
-    setSelectedEventId('');
-    setMode(lastCalendarMode);
+  const confirmDeleteEvent = () => {
+    if (formMode !== 'edit' || !selectedEventId) {
+      return;
+    }
+
+    const eventToDelete = events.find((event) => event.id === selectedEventId);
+
+    Alert.alert(
+      '予定を削除しますか？',
+      eventToDelete ? `「${eventToDelete.title}」を削除します。` : 'この予定を削除します。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: '削除',
+          style: 'destructive',
+          onPress: () => {
+            setEvents((current) => current.filter((event) => event.id !== selectedEventId));
+            setSelectedEventId('');
+            setMode('month');
+          },
+        },
+      ],
+    );
   };
 
   const jumpToday = () => {
+    if (previousCalendarState) {
+      return;
+    }
+
     const today = new Date();
-    selectDate(today, mode === 'week' ? 'week' : 'month');
+    fadeFromCurrentCalendar(() => selectDate(today, 'month'));
   };
 
-  const activeCalendarMode: CalendarMode | null = mode === 'month' || mode === 'week' ? mode : null;
-  const previousCalendarOpacity = calendarFade.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0],
-  });
+  const activeCalendarMode: CalendarMode | null = mode === 'month' ? mode : null;
 
-  const renderCalendarContent = (calendarMode: CalendarMode) =>
-    calendarMode === 'month' ? (
+  const renderCalendarContent = (state: CalendarRenderState) => {
+    const stateEvents = sortEventsForDate(state.events.filter((event) => eventOccursOnDate(event, state.selectedDate)), state.selectedDate);
+
+    return (
       <MonthScreen
         compact={compact}
         viewportWidth={width}
-        visibleMonth={visibleMonth}
-        allEvents={events}
-        events={selectedDateEvents}
-        selectedDate={selectedDate}
+        visibleMonth={state.visibleMonth}
+        allEvents={state.events}
+        events={stateEvents}
+        selectedDate={state.selectedDate}
         onSelectDate={(date) => selectDate(date)}
         onSwipeMonth={moveVisibleMonth}
-        onOpenWeek={() => changeCalendarMode('week')}
-        onSelectEvent={openEvent}
-      />
-    ) : (
-      <WeekScreen
-        viewportWidth={width}
-        selectedDate={selectedDate}
-        events={selectedDateEvents}
-        allEvents={events}
-        onSelectDate={(date) => selectDate(date, 'week')}
-        onSwipeWeek={moveSelectedWeek}
         onSelectEvent={openEvent}
       />
     );
+  };
+
+  const activeCalendarState: CalendarRenderState | null = activeCalendarMode
+    ? {
+        mode: activeCalendarMode,
+        selectedDate,
+        visibleMonth,
+        events,
+      }
+    : null;
+
+  const changeEventNotificationsEnabled = async (enabled: boolean) => {
+    if (!enabled) {
+      setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: false }));
+      return;
+    }
+
+    const granted = await ensureNotificationPermission();
+    if (!granted) {
+      Alert.alert('通知が許可されていません');
+      setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: false }));
+      return;
+    }
+
+    setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: true }));
+  };
+
+  const changeNotificationSoundEnabled = (enabled: boolean) => {
+    setNotificationSettings((current) => ({ ...current, soundEnabled: enabled }));
+  };
 
   return (
     <View style={styles.root}>
@@ -437,36 +864,61 @@ export default function App() {
       <View style={[styles.page, compact && styles.pageCompact]}>
         <Header
           title={headerTitle}
-          canGoBack={mode === 'detail' || mode === 'form'}
+          canGoBack={mode === 'form' || mode === 'pro' || mode === 'notificationSettings' || mode === 'backup'}
           canPickMonth={mode === 'month'}
-          showCalendarActions={mode === 'month' || mode === 'week'}
-          calendarMode={mode === 'week' ? 'week' : 'month'}
+          showCalendarActions={mode === 'month'}
+          showSaveAction={mode === 'form'}
+          showDeleteAction={mode === 'form' && formMode === 'edit'}
           onBack={back}
+          onOpenMenu={() => setSettingsVisible(true)}
           onOpenMonthPicker={() => setMonthPickerVisible(true)}
-          onChangeCalendarMode={changeCalendarMode}
           onToday={jumpToday}
+          onSave={saveEvent}
+          onDelete={confirmDeleteEvent}
         />
 
-        {activeCalendarMode && (
+        {activeCalendarState && (
           <View style={styles.calendarLayer}>
             <View style={styles.calendarStack}>
-              {transitionFromMode && transitionFromMode !== activeCalendarMode ? (
-                <Animated.View pointerEvents="none" style={[styles.calendarFadeLayer, { opacity: previousCalendarOpacity }]}>
-                  {renderCalendarContent(transitionFromMode)}
+              <Animated.View
+                pointerEvents={mode === 'month' && !previousCalendarState ? 'auto' : 'none'}
+                style={styles.calendarFadeLayer}
+              >
+                {renderCalendarContent({ ...activeCalendarState, mode: 'month' })}
+              </Animated.View>
+              {previousCalendarState ? (
+                <Animated.View pointerEvents="none" style={[styles.calendarFadeLayer, { opacity: calendarTransitionFade }]}>
+                  {renderCalendarContent(previousCalendarState)}
                 </Animated.View>
               ) : null}
-              <Animated.View style={[styles.calendarFadeLayer, transitionFromMode ? { opacity: calendarFade } : styles.visibleCalendarLayer]}>
-                {renderCalendarContent(activeCalendarMode)}
-              </Animated.View>
             </View>
           </View>
         )}
 
-        {mode === 'detail' && selectedEvent && <DetailScreen event={selectedEvent} onEdit={() => openEditForm(selectedEvent)} onDelete={() => deleteEvent(selectedEvent.id)} />}
+        {mode === 'form' && (
+          <EventForm
+            draft={draft}
+            onChange={setDraft}
+            onOpenDatePicker={(key) => setDatePickerTarget(key ?? 'start')}
+            onOpenTimePicker={setTimePickerTarget}
+            onOpenNotificationPicker={() => setNotificationPickerVisible(true)}
+          />
+        )}
 
-        {mode === 'form' && <EventForm draft={draft} onChange={setDraft} onSave={saveEvent} />}
+        {mode === 'pro' && <ProPlanScreen />}
 
-        {(mode === 'month' || mode === 'week') && (
+        {mode === 'notificationSettings' && (
+          <NotificationSettingsScreen
+            eventNotificationsEnabled={notificationSettings.eventNotificationsEnabled}
+            soundEnabled={notificationSettings.soundEnabled}
+            onEventNotificationsChange={changeEventNotificationsEnabled}
+            onSoundChange={changeNotificationSoundEnabled}
+          />
+        )}
+
+        {mode === 'backup' && <BackupScreen />}
+
+        {mode === 'month' && (
           <Pressable onPress={openAddForm} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
             <Text style={styles.addButtonText}>＋</Text>
           </Pressable>
@@ -481,6 +933,61 @@ export default function App() {
             setMonthPickerVisible(false);
           }}
         />
+
+        <SettingsSheet
+          visible={settingsVisible}
+          onClose={() => setSettingsVisible(false)}
+          onOpenPro={() => {
+            setSettingsVisible(false);
+            setMode('pro');
+          }}
+          onOpenNotificationSettings={() => {
+            setSettingsVisible(false);
+            setMode('notificationSettings');
+          }}
+          onOpenBackup={() => {
+            setSettingsVisible(false);
+            setMode('backup');
+          }}
+        />
+
+        <DatePicker
+          visible={datePickerTarget !== null}
+          value={parseValidDateKey(datePickerTarget === 'end' ? draft.endDate : draft.date, parseDateKey(selectedDate))}
+          onClose={() => setDatePickerTarget(null)}
+          onSelect={(date) => {
+            const dateKey = toDateKey(date);
+            setDraft((current) =>
+              datePickerTarget === 'end'
+                ? { ...current, endDate: dateKey }
+                : { ...current, date: dateKey, endDate: current.endDate < dateKey ? dateKey : current.endDate },
+            );
+            setDatePickerTarget(null);
+          }}
+        />
+
+        <TimePicker
+          visible={timePickerTarget !== null}
+          value={timePickerTarget ? draft[timePickerTarget] : '10:00'}
+          onClose={() => setTimePickerTarget(null)}
+          onSelect={(time) => {
+            if (timePickerTarget) {
+              setDraft((current) => ({ ...current, [timePickerTarget]: time }));
+            }
+            setTimePickerTarget(null);
+          }}
+        />
+
+        <NotificationPicker
+          visible={notificationPickerVisible}
+          atTimeLabel="開始時刻"
+          values={draft.startNotifications}
+          onClose={() => setNotificationPickerVisible(false)}
+          onSelect={(values) => {
+            setDraft((current) => ({ ...current, startNotifications: values }));
+            setNotificationPickerVisible(false);
+          }}
+        />
       </View>
     </View>
   );
@@ -491,21 +998,27 @@ function Header({
   canGoBack,
   canPickMonth,
   showCalendarActions,
-  calendarMode,
+  showSaveAction,
+  showDeleteAction,
   onBack,
+  onOpenMenu,
   onOpenMonthPicker,
-  onChangeCalendarMode,
   onToday,
+  onSave,
+  onDelete,
 }: {
   title: string;
   canGoBack: boolean;
   canPickMonth: boolean;
   showCalendarActions: boolean;
-  calendarMode: CalendarMode;
+  showSaveAction: boolean;
+  showDeleteAction: boolean;
   onBack: () => void;
+  onOpenMenu: () => void;
   onOpenMonthPicker: () => void;
-  onChangeCalendarMode: (mode: CalendarMode) => void;
   onToday: () => void;
+  onSave: () => void;
+  onDelete: () => void;
 }) {
   return (
     <View style={styles.header}>
@@ -513,17 +1026,20 @@ function Header({
         <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
           <Text style={styles.headerAction}>‹</Text>
         </Pressable>
-      ) : canPickMonth ? (
-        <Pressable onPress={onOpenMonthPicker} hitSlop={12} style={({ pressed }) => [styles.monthTitleButton, pressed && styles.pressed]}>
-          <Text style={styles.headerTitle}>{title}</Text>
+      ) : showCalendarActions || canPickMonth ? (
+        <Pressable onPress={onOpenMenu} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
+          <GearIcon />
         </Pressable>
-      ) : showCalendarActions ? (
-        <View style={styles.monthTitleButton}>
-          <Text style={styles.headerTitle}>{title}</Text>
-        </View>
       ) : (
         <View style={styles.headerSide} />
       )}
+
+      {(showCalendarActions || canPickMonth) && !canGoBack ? (
+        <Pressable onPress={onOpenMonthPicker} hitSlop={12} style={({ pressed }) => [styles.centerMonthTitleButton, pressed && styles.pressed]}>
+          <Text style={styles.headerTitle}>{title}</Text>
+          <DownChevron />
+        </Pressable>
+      ) : null}
 
       {!showCalendarActions && !canPickMonth ? <Text style={styles.headerTitle}>{title}</Text> : null}
 
@@ -532,54 +1048,21 @@ function Header({
           <Pressable onPress={onToday} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
             <TodayIcon />
           </Pressable>
-          <View style={styles.modeSegment}>
-            <Pressable
-              onPress={() => onChangeCalendarMode('month')}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.modeSegmentButton,
-                calendarMode === 'month' && styles.modeSegmentButtonActive,
-                pressed && styles.pressed,
-              ]}
-            >
-              <MonthIcon />
+        </View>
+      ) : showSaveAction ? (
+        <View style={[styles.headerActions, showDeleteAction && styles.headerActionsWide]}>
+          {showDeleteAction ? (
+            <Pressable onPress={onDelete} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
+              <CloseIcon />
             </Pressable>
-            <Pressable
-              onPress={() => onChangeCalendarMode('week')}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.modeSegmentButton,
-                calendarMode === 'week' && styles.modeSegmentButtonActive,
-                pressed && styles.pressed,
-              ]}
-            >
-              <WeekIcon />
-            </Pressable>
-          </View>
+          ) : null}
+          <Pressable onPress={onSave} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
+            <CheckIcon />
+          </Pressable>
         </View>
       ) : (
         <View style={styles.headerSide} />
       )}
-    </View>
-  );
-}
-
-function MonthIcon() {
-  return (
-    <View style={styles.monthGridIcon}>
-      {Array.from({ length: 9 }, (_, index) => (
-        <View key={index} style={styles.monthGridDot} />
-      ))}
-    </View>
-  );
-}
-
-function WeekIcon() {
-  return (
-    <View style={styles.weekLineIcon}>
-      {Array.from({ length: 3 }, (_, index) => (
-        <View key={index} style={styles.weekLine} />
-      ))}
     </View>
   );
 }
@@ -594,6 +1077,91 @@ function TodayIcon() {
   );
 }
 
+function GearIcon() {
+  return (
+    <View style={styles.gearIcon}>
+      <View style={[styles.gearTooth, styles.gearToothTop]} />
+      <View style={[styles.gearTooth, styles.gearToothTopRight]} />
+      <View style={[styles.gearTooth, styles.gearToothRight]} />
+      <View style={[styles.gearTooth, styles.gearToothBottomRight]} />
+      <View style={[styles.gearTooth, styles.gearToothBottom]} />
+      <View style={[styles.gearTooth, styles.gearToothBottomLeft]} />
+      <View style={[styles.gearTooth, styles.gearToothLeft]} />
+      <View style={[styles.gearTooth, styles.gearToothTopLeft]} />
+      <View style={styles.gearOuterRing} />
+      <View style={styles.gearInnerRing} />
+    </View>
+  );
+}
+
+function DownChevron() {
+  return (
+    <View style={styles.downChevronIcon}>
+      <View style={styles.downChevronLineLeft} />
+      <View style={styles.downChevronLineRight} />
+    </View>
+  );
+}
+
+function CloseIcon() {
+  return <Text style={styles.closeIconText}>×</Text>;
+}
+
+function CheckIcon() {
+  return <Text style={styles.checkIconText}>✓</Text>;
+}
+
+function AnimatedSelectedCircle({
+  selected,
+  style,
+  children,
+}: {
+  selected: boolean;
+  style: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  const [selectedOpacity] = useState(() => new Animated.Value(selected ? 1 : 0));
+
+  useEffect(() => {
+    Animated.timing(selectedOpacity, {
+      toValue: selected ? 1 : 0,
+      duration: 150,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [selected, selectedOpacity]);
+
+  return (
+    <View style={style}>
+      <Animated.View pointerEvents="none" style={[styles.selectedDateCircleFill, { opacity: selectedOpacity }]} />
+      {children}
+    </View>
+  );
+}
+
+function FadeOnChange({ watchKey, style, children }: { watchKey: string; style?: StyleProp<ViewStyle>; children: ReactNode }) {
+  const [opacity] = useState(() => new Animated.Value(1));
+  const previousWatchKey = useRef(watchKey);
+
+  useEffect(() => {
+    if (previousWatchKey.current === watchKey) {
+      return;
+    }
+
+    previousWatchKey.current = watchKey;
+    opacity.stopAnimation();
+    opacity.setValue(0);
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 170,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [opacity, watchKey]);
+
+  return <Animated.View style={[style, { opacity }]}>{children}</Animated.View>;
+}
+
 function MonthScreen({
   compact,
   viewportWidth,
@@ -603,7 +1171,6 @@ function MonthScreen({
   selectedDate,
   onSelectDate,
   onSwipeMonth,
-  onOpenWeek,
   onSelectEvent,
 }: {
   compact: boolean;
@@ -614,7 +1181,6 @@ function MonthScreen({
   selectedDate: string;
   onSelectDate: (date: Date) => void;
   onSwipeMonth: (amount: number) => void;
-  onOpenWeek: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
   const pageBuffer = 18;
@@ -626,8 +1192,12 @@ function MonthScreen({
   const currentMonthKey = monthKey(currentMonth);
   const currentPageX = -(pageBuffer + pageIndex) * viewportWidth;
   const monthPages = useMemo(
-    () => pageOffsets.map((offset) => createMonthDays(addMonths(anchorMonth, offset), selectedDate, allEvents)),
-    [allEvents, anchorMonth, pageOffsets, selectedDate],
+    () =>
+      pageOffsets.map((offset) => ({
+        offset,
+        days: Math.abs(offset - pageIndex) <= 1 ? createMonthDays(addMonths(anchorMonth, offset), selectedDate, allEvents) : null,
+      })),
+    [allEvents, anchorMonth, pageIndex, pageOffsets, selectedDate],
   );
 
   useEffect(() => {
@@ -700,42 +1270,53 @@ function MonthScreen({
             },
           ]}
         >
-          {monthPages.map((days, pageIndex) => (
-            <View key={pageIndex} style={{ width: viewportWidth }}>
-              <View style={styles.weekRow}>
-                {weekdays.map((weekday) => (
-                  <Text key={weekday} style={styles.weekday}>
-                    {weekday}
-                  </Text>
-                ))}
-              </View>
+          {monthPages.map((page) => (
+            <View key={page.offset} style={{ width: viewportWidth }}>
+              {page.days ? (
+                <>
+                  <View style={styles.weekRow}>
+                    {weekdays.map((weekday) => (
+                      <Text key={weekday} style={styles.weekday}>
+                        {weekday}
+                      </Text>
+                    ))}
+                  </View>
 
-              <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
-                {days.map((day) => (
-                  <Pressable key={day.key} onPress={() => onSelectDate(day.date)} onLongPress={() => onSelectDate(day.date)} style={styles.dateCell}>
-                    <View style={[styles.dateCircle, day.selected && styles.selectedDateCircle]}>
-                      <Text style={[styles.dateText, day.muted && styles.mutedDateText]}>{day.label}</Text>
-                    </View>
-                    <View style={styles.dotContainer}>{day.hasEvent && <View style={styles.eventDot} />}</View>
-                  </Pressable>
-                ))}
-              </View>
+                  <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
+                    {page.days.map((day) => (
+                      <Pressable
+                        key={day.key}
+                        disabled={day.muted}
+                        onPress={() => onSelectDate(day.date)}
+                        onLongPress={() => onSelectDate(day.date)}
+                        style={styles.dateCell}
+                      >
+                        {day.muted ? null : (
+                          <>
+                            <AnimatedSelectedCircle selected={day.selected} style={styles.dateCircle}>
+                              <Text style={[styles.dateText, { opacity: dateOpacityForEventCount(day.eventCount) }]}>{day.label}</Text>
+                            </AnimatedSelectedCircle>
+                          </>
+                        )}
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
+              ) : null}
             </View>
           ))}
         </Animated.View>
       </View>
 
-      <View style={styles.sectionLine} />
-
       <ScrollView style={styles.scheduleScroll} contentContainerStyle={styles.scheduleList} showsVerticalScrollIndicator={false}>
-        <Pressable onPress={onOpenWeek} style={({ pressed }) => pressed && styles.pressed}>
-          <Text style={styles.selectedDateText}>{formatDateTitle(selectedDate)}</Text>
-        </Pressable>
+        <FadeOnChange watchKey={selectedDate}>
+          <Text style={styles.selectedDateText}>{formatShortDateTitle(selectedDate)}</Text>
         {events.length === 0 ? (
           <Text style={styles.emptyText}>予定はありません</Text>
         ) : (
-          events.map((event) => <ScheduleRow key={event.id} event={event} onPress={() => onSelectEvent(event)} />)
-        )}
+          <ScheduleTimeline events={events} selectedDate={selectedDate} onSelectEvent={onSelectEvent} />
+          )}
+        </FadeOnChange>
       </ScrollView>
     </View>
   );
@@ -754,8 +1335,30 @@ function MonthPicker({
 }) {
   const [year, setYear] = useState(value.getFullYear());
   const [month, setMonth] = useState(value.getMonth());
-  const years = useMemo(() => Array.from({ length: 21 }, (_, index) => value.getFullYear() - 10 + index), [value]);
+  const yearScrollRef = useRef<ScrollView | null>(null);
+  const monthScrollRef = useRef<ScrollView | null>(null);
+  const yearScrollY = useRef(new Animated.Value(0)).current;
+  const monthScrollY = useRef(new Animated.Value(0)).current;
+  const firstYear = value.getFullYear() - 50;
+  const years = useMemo(() => Array.from({ length: 101 }, (_, index) => firstYear + index), [firstYear]);
   const months = useMemo(() => Array.from({ length: 12 }, (_, index) => index), []);
+  const clampIndex = (index: number, length: number) => Math.max(0, Math.min(length - 1, index));
+  const scrollToSelected = (animated: boolean) => {
+    const yearOffset = (value.getFullYear() - firstYear) * pickerItemHeight;
+    const monthOffset = value.getMonth() * pickerItemHeight;
+    yearScrollY.setValue(yearOffset);
+    monthScrollY.setValue(monthOffset);
+    yearScrollRef.current?.scrollTo({ y: yearOffset, animated });
+    monthScrollRef.current?.scrollTo({ y: monthOffset, animated });
+  };
+  const updateYearFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), years.length);
+    setYear(years[index]);
+  };
+  const updateMonthFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), months.length);
+    setMonth(months[index]);
+  };
 
   useEffect(() => {
     if (!visible) {
@@ -764,286 +1367,1005 @@ function MonthPicker({
 
     setYear(value.getFullYear());
     setMonth(value.getMonth());
-  }, [value, visible]);
+    requestAnimationFrame(() => scrollToSelected(false));
+  }, [firstYear, value, visible]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.pickerBackdrop} onPress={onClose}>
-        <Pressable style={styles.pickerSheet}>
+      <View style={styles.pickerBackdrop}>
+        <Pressable style={styles.pickerBackdropPress} onPress={onClose} />
+        <View style={styles.pickerSheet}>
           <View style={styles.pickerHeader}>
-            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
-              <Text style={styles.pickerAction}>閉じる</Text>
+            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CloseIcon />
             </Pressable>
             <Text style={styles.pickerTitle}>年月</Text>
-            <Pressable onPress={() => onSelect(new Date(year, month, 1))} hitSlop={14} style={({ pressed }) => pressed && styles.pressed}>
-              <Text style={styles.pickerAction}>決定</Text>
+            <Pressable onPress={() => onSelect(new Date(year, month, 1))} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CheckIcon />
             </Pressable>
           </View>
 
           <View style={styles.pickerColumns}>
-            <ScrollView style={styles.pickerColumn} contentContainerStyle={styles.pickerColumnContent} showsVerticalScrollIndicator={false}>
-              {years.map((item) => (
-                <Pressable key={item} onPress={() => setYear(item)} style={styles.pickerItem}>
-                  <Text style={[styles.pickerItemText, item === year && styles.pickerItemTextSelected]}>{item}年</Text>
-                </Pressable>
+            <Animated.ScrollView
+              ref={yearScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: yearScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateYearFromScroll}
+              onScrollEndDrag={updateYearFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {years.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={yearScrollY} index={index}>
+                    {item}年
+                  </PickerItemText>
+                </View>
               ))}
-            </ScrollView>
+            </Animated.ScrollView>
 
-            <ScrollView style={styles.pickerColumn} contentContainerStyle={styles.pickerColumnContent} showsVerticalScrollIndicator={false}>
-              {months.map((item) => (
-                <Pressable key={item} onPress={() => setMonth(item)} style={styles.pickerItem}>
-                  <Text style={[styles.pickerItemText, item === month && styles.pickerItemTextSelected]}>{item + 1}月</Text>
-                </Pressable>
+            <Animated.ScrollView
+              ref={monthScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: monthScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateMonthFromScroll}
+              onScrollEndDrag={updateMonthFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {months.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={monthScrollY} index={index}>
+                    {item + 1}月
+                  </PickerItemText>
+                </View>
               ))}
-            </ScrollView>
+            </Animated.ScrollView>
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
 
-function ScheduleRow({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
+const settingsSections = [
+  [
+    {
+      title: 'Proプラン',
+      subtitle: 'もっと自由に、カレンダーを使いこなす。',
+    },
+    {
+      title: '通知設定',
+    },
+    {
+      title: 'バックアップ',
+    },
+  ],
+  [
+    {
+      title: 'アプリのシェア',
+    },
+    {
+      title: 'ストアレビュー',
+    },
+  ],
+  [
+    {
+      title: '利用規約',
+    },
+    {
+      title: 'プライバシーポリシー',
+    },
+    {
+      title: '特定商法に基づく表記',
+    },
+  ],
+  [
+    {
+      title: 'データ初期化',
+    },
+  ],
+];
+
+function SettingsSheet({
+  visible,
+  onClose,
+  onOpenPro,
+  onOpenNotificationSettings,
+  onOpenBackup,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onOpenPro: () => void;
+  onOpenNotificationSettings: () => void;
+  onOpenBackup: () => void;
+}) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.scheduleRow, pressed && styles.pressed]}>
-      <View style={styles.scheduleTime}>
-        <Text style={styles.scheduleStart}>{event.start}</Text>
-        <Text style={styles.scheduleEnd}>{event.end}</Text>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.settingsBackdrop}>
+        <Pressable style={styles.settingsBackdropPress} onPress={onClose} />
+        <View style={styles.settingsSheet}>
+          <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.settingsCloseButton, pressed && styles.pressed]}>
+            <CloseIcon />
+          </Pressable>
+          <View style={styles.settingsHandle} />
+          <Text style={styles.settingsTitle}>設定</Text>
+          <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
+            {settingsSections.map((section, sectionIndex) => (
+              <View key={sectionIndex} style={styles.settingsSection}>
+                {section.map((item, itemIndex) => (
+                  <SettingsRow
+                    key={item.title}
+                    title={item.title}
+                    subtitle={item.subtitle}
+                    onPress={
+                      sectionIndex === 0 && itemIndex === 0
+                        ? onOpenPro
+                        : sectionIndex === 0 && itemIndex === 1
+                          ? onOpenNotificationSettings
+                          : sectionIndex === 0 && itemIndex === 2
+                            ? onOpenBackup
+                            : undefined
+                    }
+                  />
+                ))}
+              </View>
+            ))}
+          </ScrollView>
+        </View>
       </View>
-      <Text style={styles.scheduleTitle}>{event.title}</Text>
+    </Modal>
+  );
+}
+
+function SettingsRow({ title, subtitle, onPress }: { title: string; subtitle?: string; onPress?: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.settingsRow, pressed && styles.pressed]}>
+      <View style={styles.settingsRowText}>
+        <Text style={styles.settingsRowTitle}>{title}</Text>
+        {subtitle ? <Text style={styles.settingsRowSubtitle}>{subtitle}</Text> : null}
+      </View>
+      <Text style={styles.settingsChevron}>›</Text>
     </Pressable>
   );
 }
 
-function WeekScreen({
-  viewportWidth,
-  selectedDate,
-  events,
-  allEvents,
-  onSelectDate,
-  onSwipeWeek,
-  onSelectEvent,
-}: {
-  viewportWidth: number;
-  selectedDate: string;
-  events: CalendarEvent[];
-  allEvents: CalendarEvent[];
-  onSelectDate: (date: Date) => void;
-  onSwipeWeek: (amount: number) => void;
-  onSelectEvent: (event: CalendarEvent) => void;
-}) {
-  const selected = parseDateKey(selectedDate);
-  const pageBuffer = 18;
-  const pageOffsets = useMemo(() => Array.from({ length: pageBuffer * 2 + 1 }, (_, index) => index - pageBuffer), []);
-  const [anchorSelectedDate, setAnchorSelectedDate] = useState(selected);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [slideX] = useState(() => new Animated.Value(-pageBuffer * viewportWidth));
-  const currentSelectedDate = addDays(anchorSelectedDate, pageIndex * 7);
-  const currentSelectedDateKey = toDateKey(currentSelectedDate);
-  const currentPageX = -(pageBuffer + pageIndex) * viewportWidth;
-  const weekPages = useMemo(() => pageOffsets.map((offset) => {
-    const pageSelectedDate = addDays(anchorSelectedDate, offset * 7);
-    const pageStart = startOfWeek(pageSelectedDate);
-    const pageSelectedKey = toDateKey(pageSelectedDate);
+const proFeatures = [
+  {
+    title: '広告なし',
+    description: 'すっきりとした体験を提供します。',
+  },
+  {
+    title: 'iCloudバックアップ',
+    description: '大切な予定を安全に保存します。',
+  },
+  {
+    title: '通知の詳細設定',
+    description: '自分に合った受け取り方に調整できます。',
+  },
+  {
+    title: 'カレンダーの高度なカスタマイズ',
+    description: '色や表示方法をより細かく設定できます。',
+  },
+  {
+    title: '今後のPro機能',
+    description: '新しい機能をいち早くご利用いただけます。',
+  },
+];
 
-    return Array.from({ length: 7 }, (_, index) => {
-      const date = addDays(pageStart, index);
-
-      return {
-        date,
-        key: toDateKey(date),
-        selected: toDateKey(date) === pageSelectedKey,
-      };
-    });
-  }), [anchorSelectedDate, pageOffsets]);
-
-  useEffect(() => {
-    if (toDateKey(selected) === currentSelectedDateKey) {
-      return;
-    }
-
-    setAnchorSelectedDate(selected);
-    setPageIndex(0);
-    slideX.setValue(-pageBuffer * viewportWidth);
-  }, [currentSelectedDateKey, selected, slideX, viewportWidth]);
-
-  const slideWeek = (amount: number) => {
-    const targetX = -(pageBuffer + pageIndex + amount) * viewportWidth;
-
-    Animated.timing(slideX, {
-      toValue: targetX,
-      duration: 170,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start(() => {
-      setPageIndex((current) => current + amount);
-      onSwipeWeek(amount);
-    });
-  };
-
-  const returnWeek = () => {
-    Animated.timing(slideX, {
-      toValue: currentPageX,
-      duration: 170,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 18 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
-        onPanResponderMove: (_, gesture) => {
-          slideX.setValue(currentPageX + gesture.dx);
-        },
-        onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx <= -viewportWidth * 0.22 || gesture.vx < -0.45) {
-            slideWeek(1);
-            return;
-          }
-
-          if (gesture.dx >= viewportWidth * 0.22 || gesture.vx > 0.45) {
-            slideWeek(-1);
-            return;
-          }
-
-          returnWeek();
-        },
-        onPanResponderTerminate: returnWeek,
-      }),
-    [currentPageX, returnWeek, slideWeek, slideX, viewportWidth],
-  );
-
+function ProPlanScreen() {
   return (
-    <View style={styles.weekScreen}>
-      <View style={styles.weekSwipeArea} {...panResponder.panHandlers}>
-        <Animated.View
-          style={[
-            styles.horizontalPages,
-            {
-              width: viewportWidth * weekPages.length,
-              transform: [{ translateX: slideX }],
-            },
-          ]}
-        >
-          {weekPages.map((days, pageIndex) => (
-            <View key={pageIndex} style={[styles.dayMiniCalendar, { width: viewportWidth }]}>
-              <View style={styles.weekRow}>
-                {weekdays.map((weekday) => (
-                  <Text key={weekday} style={styles.weekday}>
-                    {weekday}
-                  </Text>
-                ))}
-              </View>
-              <View style={styles.dayStrip}>
-                {days.map((day) => (
-                  <Pressable key={day.key} onPress={() => onSelectDate(day.date)} style={styles.dayStripCell}>
-                    <View style={[styles.dayStripCircle, day.selected && styles.selectedDateCircle]}>
-                      <Text style={styles.dayStripText}>{day.date.getDate()}</Text>
-                    </View>
-                    <View style={styles.dotContainer}>{!day.selected && allEvents.some((event) => event.date === day.key) && <View style={styles.eventDot} />}</View>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ))}
-        </Animated.View>
+    <ScrollView style={styles.proScreen} contentContainerStyle={styles.proContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.proHero}>
+        <Text style={styles.proHeroTitle}>Yohaku Pro</Text>
+        <Text style={styles.proHeroSubtitle}>より静かに、より自由に。</Text>
       </View>
 
-      <ScrollView style={styles.timelineScroll} contentContainerStyle={styles.timelineContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.timeline}>
-          {hours.map((hour) => (
-            <View key={hour} style={styles.hourRow}>
-              <Text style={styles.hourText}>{hour}</Text>
-              <View style={styles.hourLine} />
+      <View style={styles.proFeatureList}>
+        {proFeatures.map((feature) => (
+          <Pressable key={feature.title} style={({ pressed }) => [styles.proFeatureRow, pressed && styles.pressed]}>
+            <View style={styles.proFeatureText}>
+              <Text style={styles.proFeatureTitle}>{feature.title}</Text>
+              <Text style={styles.proFeatureDescription}>{feature.description}</Text>
             </View>
-          ))}
+            <Text style={styles.proChevron}>›</Text>
+          </Pressable>
+        ))}
+      </View>
 
-          {events.map((event) => (
-            <TimelineEvent key={event.id} event={event} onPress={() => onSelectEvent(event)} />
-          ))}
-
-          {events.length === 0 ? <Text style={styles.timelineEmpty}>予定はありません</Text> : null}
+      <View style={styles.proPlanSection}>
+        <Text style={styles.proSectionLabel}>料金プラン</Text>
+        <View style={styles.proPlanCard}>
+          <Pressable style={({ pressed }) => [styles.proPlanRow, pressed && styles.pressed]}>
+            <Text style={styles.proPlanName}>月額</Text>
+            <View style={styles.proPlanValue}>
+              <Text style={styles.proPlanPrice}>300円 / 月</Text>
+              <Text style={styles.proPlanCheck}>✓</Text>
+            </View>
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.proPlanRow, pressed && styles.pressed]}>
+            <Text style={styles.proPlanName}>年額</Text>
+            <Text style={styles.proPlanPrice}>2,400円 / 年</Text>
+          </Pressable>
         </View>
-      </ScrollView>
+        <Text style={styles.proCancelText}>いつでも解約できます。</Text>
+      </View>
+
+      <View style={styles.proActions}>
+        <Pressable style={({ pressed }) => [styles.proStartButton, pressed && styles.pressed]}>
+          <Text style={styles.proStartButtonText}>Proをはじめる</Text>
+        </Pressable>
+        <Pressable style={({ pressed }) => pressed && styles.pressed}>
+          <Text style={styles.proRestoreText}>購入を復元</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
+function NotificationSettingsScreen({
+  eventNotificationsEnabled,
+  soundEnabled,
+  onEventNotificationsChange,
+  onSoundChange,
+}: {
+  eventNotificationsEnabled: boolean;
+  soundEnabled: boolean;
+  onEventNotificationsChange: (value: boolean) => void;
+  onSoundChange: (value: boolean) => void;
+}) {
+  return (
+    <ScrollView style={styles.notificationSettingsScreen} contentContainerStyle={styles.notificationSettingsContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.notificationSettingsGroup}>
+        <NotificationToggleRow
+          title="予定の通知"
+          value={eventNotificationsEnabled}
+          onValueChange={onEventNotificationsChange}
+        />
+      </View>
+
+      <View style={styles.notificationSettingsGroup}>
+        <NotificationToggleRow
+          title="通知音"
+          value={soundEnabled}
+          onValueChange={onSoundChange}
+        />
+      </View>
+
+      <View style={styles.notificationSettingsGroup}>
+        <NotificationSettingRow title="通知をテスト" />
+      </View>
+    </ScrollView>
+  );
+}
+
+function NotificationToggleRow({
+  title,
+  value,
+  onValueChange,
+}: {
+  title: string;
+  value: boolean;
+  onValueChange: (value: boolean) => void;
+}) {
+  return (
+    <View style={styles.notificationSettingsRow}>
+      <Text style={styles.notificationSettingsTitle}>{title === '予定の通知' ? '通知を受け取る' : title}</Text>
+      <View style={styles.notificationSwitchFrame}>
+        <Switch
+          value={value}
+          onValueChange={onValueChange}
+          trackColor={{ false: '#D8D8D4', true: '#D8D8D4' }}
+          thumbColor={tokens.surface}
+          ios_backgroundColor="#D8D8D4"
+        />
+      </View>
     </View>
   );
 }
 
-function TimelineEvent({ event, onPress }: { event: CalendarEvent; onPress: () => void }) {
-  const start = minutesFromTime(event.start);
-  const end = minutesFromTime(event.end);
-  const top = Math.max(0, (start / 60) * hourHeight);
-  const height = Math.max(36, ((end - start) / 60) * hourHeight);
-
+function NotificationSettingRow({ title, value }: { title: string; value?: string }) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.timelineEvent, { top, height }, pressed && styles.pressed]}>
-      <Text style={styles.timelineTitle}>{event.title}</Text>
+    <Pressable style={({ pressed }) => [styles.notificationSettingsRow, pressed && styles.pressed]}>
+      <Text style={styles.notificationSettingsTitle}>{title}</Text>
+      <View style={styles.notificationSettingsValueGroup}>
+        {value ? <Text style={styles.notificationSettingsValue}>{value}</Text> : null}
+        <Text style={styles.notificationSettingsChevron}>›</Text>
+      </View>
     </Pressable>
   );
 }
 
-function DetailScreen({
-  event,
-  onEdit,
-  onDelete,
-}: {
-  event: CalendarEvent;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
+function BackupScreen() {
+  const [iCloudBackupEnabled, setICloudBackupEnabled] = useState(false);
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+
   return (
-    <ScrollView style={styles.detailScreen} contentContainerStyle={styles.detailContent} showsVerticalScrollIndicator={false}>
-      <Text style={styles.detailTitle}>{event.title}</Text>
-      <Text style={styles.detailMeta}>{formatFullDate(event.date)}</Text>
-      <Text style={styles.detailMeta}>
-        {event.start} - {event.end}
-      </Text>
+    <ScrollView style={styles.backupScreen} contentContainerStyle={styles.backupContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.backupList}>
+        <BackupToggleRow title="iCloudバックアップ" value={iCloudBackupEnabled} onValueChange={setICloudBackupEnabled} />
+        <BackupToggleRow title="自動バックアップ" value={autoBackupEnabled} onValueChange={setAutoBackupEnabled} />
+        <BackupValueRow title="最終バックアップ" value="2026.6.18 22:14" />
+        <BackupActionRow title="今すぐバックアップ" />
+        <BackupActionRow title="バックアップから復元" />
+      </View>
 
-      {event.location ? <Text style={styles.detailText}>{event.location}</Text> : null}
-      {event.memo ? <Text style={styles.detailText}>{event.memo}</Text> : null}
-      {event.notification ? <Text style={styles.detailText}>{event.notification}</Text> : null}
-
-      <View style={styles.detailActions}>
-        <Pressable onPress={onEdit} style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}>
-          <Text style={styles.editButtonText}>編集</Text>
-        </Pressable>
-        <Pressable onPress={onDelete} style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}>
-          <Text style={styles.deleteButtonText}>削除</Text>
-        </Pressable>
+      <View style={styles.backupDescription}>
+        <Text style={styles.backupDescriptionText}>このアプリの予定を iCloud に保存します</Text>
+        <Text style={styles.backupDescriptionText}>同じApple IDの端末で復元できます</Text>
       </View>
     </ScrollView>
+  );
+}
+
+function BackupToggleRow({
+  title,
+  value,
+  onValueChange,
+}: {
+  title: string;
+  value: boolean;
+  onValueChange: (value: boolean) => void;
+}) {
+  return (
+    <View style={styles.backupRow}>
+      <Text style={styles.backupRowTitle}>{title}</Text>
+      <View style={styles.backupSwitchFrame}>
+        <Switch
+          value={value}
+          onValueChange={onValueChange}
+          trackColor={{ false: '#D8D8D4', true: '#D8D8D4' }}
+          thumbColor={tokens.surface}
+          ios_backgroundColor="#D8D8D4"
+        />
+      </View>
+    </View>
+  );
+}
+
+function BackupValueRow({ title, value }: { title: string; value: string }) {
+  return (
+    <View style={styles.backupRow}>
+      <Text style={styles.backupRowTitle}>{title}</Text>
+      <Text style={styles.backupRowValue}>{value}</Text>
+    </View>
+  );
+}
+
+function BackupActionRow({ title }: { title: string }) {
+  return (
+    <Pressable style={({ pressed }) => [styles.backupRow, pressed && styles.pressed]}>
+      <Text style={styles.backupRowTitle}>{title}</Text>
+      <Text style={styles.backupChevron}>›</Text>
+    </Pressable>
+  );
+}
+
+function DatePicker({
+  visible,
+  value,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  value: Date;
+  onClose: () => void;
+  onSelect: (date: Date) => void;
+}) {
+  const [year, setYear] = useState(value.getFullYear());
+  const [month, setMonth] = useState(value.getMonth());
+  const [day, setDay] = useState(value.getDate());
+  const yearScrollRef = useRef<ScrollView | null>(null);
+  const monthScrollRef = useRef<ScrollView | null>(null);
+  const dayScrollRef = useRef<ScrollView | null>(null);
+  const yearScrollY = useRef(new Animated.Value(0)).current;
+  const monthScrollY = useRef(new Animated.Value(0)).current;
+  const dayScrollY = useRef(new Animated.Value(0)).current;
+  const firstYear = value.getFullYear() - 50;
+  const years = useMemo(() => Array.from({ length: 101 }, (_, index) => firstYear + index), [firstYear]);
+  const months = useMemo(() => Array.from({ length: 12 }, (_, index) => index), []);
+  const days = useMemo(() => Array.from({ length: daysInMonth(new Date(year, month, 1)) }, (_, index) => index + 1), [month, year]);
+  const clampIndex = (index: number, length: number) => Math.max(0, Math.min(length - 1, index));
+  const scrollToSelected = (animated: boolean) => {
+    const yearOffset = (value.getFullYear() - firstYear) * pickerItemHeight;
+    const monthOffset = value.getMonth() * pickerItemHeight;
+    const dayOffset = (value.getDate() - 1) * pickerItemHeight;
+    yearScrollY.setValue(yearOffset);
+    monthScrollY.setValue(monthOffset);
+    dayScrollY.setValue(dayOffset);
+    yearScrollRef.current?.scrollTo({ y: yearOffset, animated });
+    monthScrollRef.current?.scrollTo({ y: monthOffset, animated });
+    dayScrollRef.current?.scrollTo({ y: dayOffset, animated });
+  };
+  const updateYearFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), years.length);
+    setYear(years[index]);
+  };
+  const updateMonthFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), months.length);
+    setMonth(months[index]);
+  };
+  const updateDayFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), days.length);
+    setDay(days[index]);
+  };
+
+  useEffect(() => {
+    const maxDay = days[days.length - 1] ?? 1;
+    if (day <= maxDay) {
+      return;
+    }
+
+    setDay(maxDay);
+    const dayOffset = (maxDay - 1) * pickerItemHeight;
+    dayScrollY.setValue(dayOffset);
+    dayScrollRef.current?.scrollTo({ y: dayOffset, animated: true });
+  }, [day, dayScrollY, days]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setYear(value.getFullYear());
+    setMonth(value.getMonth());
+    setDay(value.getDate());
+    requestAnimationFrame(() => scrollToSelected(false));
+  }, [firstYear, value, visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.pickerBackdrop}>
+        <Pressable style={styles.pickerBackdropPress} onPress={onClose} />
+        <View style={styles.pickerSheet}>
+          <View style={styles.pickerHeader}>
+            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CloseIcon />
+            </Pressable>
+            <Text style={styles.pickerTitle}>日付</Text>
+            <Pressable onPress={() => onSelect(new Date(year, month, Math.min(day, daysInMonth(new Date(year, month, 1)))))} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CheckIcon />
+            </Pressable>
+          </View>
+
+          <View style={styles.datePickerColumns}>
+            <Animated.ScrollView
+              ref={yearScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: yearScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateYearFromScroll}
+              onScrollEndDrag={updateYearFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {years.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={yearScrollY} index={index}>
+                    {item}年
+                  </PickerItemText>
+                </View>
+              ))}
+            </Animated.ScrollView>
+
+            <Animated.ScrollView
+              ref={monthScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: monthScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateMonthFromScroll}
+              onScrollEndDrag={updateMonthFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {months.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={monthScrollY} index={index}>
+                    {item + 1}月
+                  </PickerItemText>
+                </View>
+              ))}
+            </Animated.ScrollView>
+
+            <Animated.ScrollView
+              ref={dayScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: dayScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateDayFromScroll}
+              onScrollEndDrag={updateDayFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {days.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={dayScrollY} index={index}>
+                    {item}日
+                  </PickerItemText>
+                </View>
+              ))}
+            </Animated.ScrollView>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function TimePicker({
+  visible,
+  value,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  value: string;
+  onClose: () => void;
+  onSelect: (time: string) => void;
+}) {
+  const [hour, setHour] = useState(Math.floor(minutesFromTime(value) / 60));
+  const [minute, setMinute] = useState(minutesFromTime(value) % 60);
+  const hourScrollRef = useRef<ScrollView | null>(null);
+  const minuteScrollRef = useRef<ScrollView | null>(null);
+  const hourScrollY = useRef(new Animated.Value(0)).current;
+  const minuteScrollY = useRef(new Animated.Value(0)).current;
+  const hours = useMemo(() => Array.from({ length: 24 }, (_, index) => index), []);
+  const minutes = useMemo(() => Array.from({ length: 6 }, (_, index) => index * 10), []);
+  const clampIndex = (index: number, length: number) => Math.max(0, Math.min(length - 1, index));
+  const scrollToSelected = (animated: boolean) => {
+    const valueMinutes = minutesFromTime(value);
+    const hourOffset = Math.floor(valueMinutes / 60) * pickerItemHeight;
+    const minuteOffset = (nearestMinuteStep(valueMinutes % 60) / 10) * pickerItemHeight;
+    hourScrollY.setValue(hourOffset);
+    minuteScrollY.setValue(minuteOffset);
+    hourScrollRef.current?.scrollTo({ y: hourOffset, animated });
+    minuteScrollRef.current?.scrollTo({ y: minuteOffset, animated });
+  };
+  const updateHourFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), hours.length);
+    setHour(hours[index]);
+  };
+  const updateMinuteFromScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = clampIndex(Math.round(event.nativeEvent.contentOffset.y / pickerItemHeight), minutes.length);
+    setMinute(minutes[index]);
+  };
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    const valueMinutes = minutesFromTime(value);
+    setHour(Math.floor(valueMinutes / 60));
+    setMinute(nearestMinuteStep(valueMinutes % 60));
+    requestAnimationFrame(() => scrollToSelected(false));
+  }, [value, visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.pickerBackdrop}>
+        <Pressable style={styles.pickerBackdropPress} onPress={onClose} />
+        <View style={styles.pickerSheet}>
+          <View style={styles.pickerHeader}>
+            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CloseIcon />
+            </Pressable>
+            <Text style={styles.pickerTitle}>時刻</Text>
+            <Pressable onPress={() => onSelect(`${pad(hour)}:${pad(minute)}`)} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CheckIcon />
+            </Pressable>
+          </View>
+
+          <View style={styles.pickerColumns}>
+            <Animated.ScrollView
+              ref={hourScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: hourScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateHourFromScroll}
+              onScrollEndDrag={updateHourFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {hours.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={hourScrollY} index={index}>
+                    {item}時
+                  </PickerItemText>
+                </View>
+              ))}
+            </Animated.ScrollView>
+
+            <Animated.ScrollView
+              ref={minuteScrollRef}
+              style={styles.pickerColumn}
+              contentContainerStyle={styles.pickerColumnContent}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={pickerItemHeight}
+              decelerationRate="fast"
+              scrollEventThrottle={16}
+              onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: minuteScrollY } } }], { useNativeDriver: true })}
+              onMomentumScrollEnd={updateMinuteFromScroll}
+              onScrollEndDrag={updateMinuteFromScroll}
+              onLayout={() => visible && requestAnimationFrame(() => scrollToSelected(false))}
+            >
+              {minutes.map((item, index) => (
+                <View key={item} style={styles.pickerItem}>
+                  <PickerItemText scrollY={minuteScrollY} index={index}>
+                    {pad(item)}分
+                  </PickerItemText>
+                </View>
+              ))}
+            </Animated.ScrollView>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function NotificationPicker({
+  visible,
+  atTimeLabel,
+  values,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  atTimeLabel: string;
+  values: NotificationOption[];
+  onClose: () => void;
+  onSelect: (values: NotificationOption[]) => void;
+}) {
+  const [selectedValues, setSelectedValues] = useState<NotificationOption[]>(normalizeNotifications(values));
+  const toggle = (value: NotificationOption) => {
+    setSelectedValues((current) => {
+      if (value === 'none') {
+        return ['none'];
+      }
+
+      const withoutNone = current.filter((item) => item !== 'none');
+      const next = withoutNone.includes(value) ? withoutNone.filter((item) => item !== value) : [...withoutNone, value];
+      return next.length > 0 ? next : ['none'];
+    });
+  };
+
+  useEffect(() => {
+    if (visible) {
+      setSelectedValues(normalizeNotifications(values));
+    }
+  }, [values, visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.pickerBackdrop}>
+        <Pressable style={styles.pickerBackdropPress} onPress={onClose} />
+        <View style={styles.notificationSheet}>
+          <View style={styles.pickerHeader}>
+            <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CloseIcon />
+            </Pressable>
+            <Text style={styles.pickerTitle}>通知</Text>
+            <Pressable onPress={() => onSelect(normalizeNotifications(selectedValues))} hitSlop={14} style={({ pressed }) => [styles.pickerIconButton, pressed && styles.pressed]}>
+              <CheckIcon />
+            </Pressable>
+          </View>
+
+          <View style={styles.notificationOptions}>
+            {notificationOptions.map((option) => {
+              const selected = selectedValues.includes(option.value);
+
+              return (
+                <Pressable key={option.value} onPress={() => toggle(option.value)} style={({ pressed }) => [styles.notificationOption, pressed && styles.pressed]}>
+                  <View style={styles.checkbox}>
+                    {selected ? <CheckIcon /> : null}
+                  </View>
+                  <Text style={styles.notificationOptionText}>{notificationLabel(option.value, atTimeLabel)}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function PickerItemText({ scrollY, index, children }: { scrollY: Animated.Value; index: number; children: ReactNode }) {
+  const itemOffset = index * pickerItemHeight;
+  const scale = scrollY.interpolate({
+    inputRange: [itemOffset - pickerItemHeight, itemOffset, itemOffset + pickerItemHeight],
+    outputRange: [1, 1.16, 1],
+    extrapolate: 'clamp',
+  });
+  const opacity = scrollY.interpolate({
+    inputRange: [itemOffset - pickerItemHeight, itemOffset, itemOffset + pickerItemHeight],
+    outputRange: [0.28, 1, 0.28],
+    extrapolate: 'clamp',
+  });
+
+  return <Animated.Text style={[styles.pickerItemText, { opacity, transform: [{ scale }] }]}>{children}</Animated.Text>;
+}
+
+function ScheduleTimeline({ events, selectedDate, onSelectEvent }: { events: CalendarEvent[]; selectedDate: string; onSelectEvent: (event: CalendarEvent) => void }) {
+  const groups = useMemo(() => buildScheduleTimelineGroups(events, selectedDate), [events, selectedDate]);
+  const multiDayEvents = useMemo(() => events.filter(isMultiDayEvent), [events]);
+  const hasSingleDayEvents = events.some((event) => !isMultiDayEvent(event));
+  const showMultiDayOverlay = multiDayEvents.length > 0 && hasSingleDayEvents;
+  const groupHeights = useMemo(() => groups.map(scheduleGroupHeight), [groups]);
+  const timelineHeight = groupHeights.reduce((total, height) => total + height, 0) + Math.max(0, groupHeights.length - 1) * scheduleTimelineGroupGap;
+  const columnCount = groups[0]?.columnCount ?? Math.max(1, multiDayEvents.length);
+
+  return (
+    <View style={styles.scheduleTimeline}>
+      {showMultiDayOverlay ? (
+        <View pointerEvents="box-none" style={[styles.scheduleTimelineOverlay, { height: timelineHeight }]}>
+          {multiDayEvents.map((event, index) => (
+            <View
+              key={event.id}
+              style={[
+                styles.scheduleTimelineCardSlot,
+                {
+                  top: 0,
+                  height: timelineHeight,
+                  left: `${(index / columnCount) * 100}%`,
+                  width: `${100 / columnCount}%`,
+                },
+              ]}
+            >
+              <Pressable onPress={() => onSelectEvent(event)} style={({ pressed }) => [styles.scheduleTimelineCard, pressed && styles.pressed]}>
+                <Text style={styles.scheduleTitle} numberOfLines={2} ellipsizeMode="tail">
+                  {event.title}
+                </Text>
+                <Text style={styles.scheduleCardEndTime} numberOfLines={isMultiDayEvent(event) ? 2 : 1} ellipsizeMode="clip" adjustsFontSizeToFit minimumFontScale={0.85}>
+                  {formatScheduleEndLabel(event)}
+                </Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {groups.map((group) => (
+        <ScheduleTimelineGroupView key={group.id} group={group} onSelectEvent={onSelectEvent} />
+      ))}
+    </View>
+  );
+}
+
+const scheduleGroupHeight = (group: ScheduleTimelineGroup) => {
+  const entryBottoms = group.entries.map((entry) => scheduleEntryTop(entry, group) + scheduleEntryHeight(entry));
+  return Math.max(scheduleMinCardHeight, ...entryBottoms);
+};
+
+const scheduleEntryTop = (entry: ScheduleTimelineEntry, group: ScheduleTimelineGroup) =>
+  Math.max(0, (entry.start - group.start) * schedulePixelsPerMinute);
+
+const scheduleEntryHeight = (entry: ScheduleTimelineEntry) =>
+  Math.max(scheduleMinCardHeight, (entry.end - entry.start) * schedulePixelsPerMinute);
+
+function ScheduleTimelineGroupView({
+  group,
+  onSelectEvent,
+}: {
+  group: ScheduleTimelineGroup;
+  onSelectEvent: (event: CalendarEvent) => void;
+}) {
+  const groupHeight = scheduleGroupHeight(group);
+
+  return (
+    <View style={[styles.scheduleTimelineGroup, { minHeight: groupHeight }]}>
+      <View style={[styles.scheduleTimelineTimes, { height: groupHeight }]}>
+        <Text style={styles.scheduleStart}>{formatTimelineTime(group.start)}</Text>
+      </View>
+      <View style={[styles.scheduleTimelineMarker, { height: groupHeight }]}>
+        <View style={styles.scheduleDot} />
+        <View style={styles.scheduleLine} />
+      </View>
+      <View style={[styles.scheduleTimelineCards, { height: groupHeight }]}>
+        {group.entries.map((entry) => {
+          const top = scheduleEntryTop(entry, group);
+          const height = scheduleEntryHeight(entry);
+          const compactCard = group.columnCount >= 3 || height < 74;
+
+          return (
+            <View
+              key={entry.event.id}
+              style={[
+                styles.scheduleTimelineCardSlot,
+                compactCard && styles.scheduleTimelineCardSlotCompact,
+                {
+                  top,
+                  height,
+                  left: `${(entry.column / group.columnCount) * 100}%`,
+                  width: `${100 / group.columnCount}%`,
+                },
+              ]}
+            >
+              <Pressable
+                onPress={() => onSelectEvent(entry.event)}
+                style={({ pressed }) => [styles.scheduleTimelineCard, compactCard && styles.scheduleTimelineCardCompact, pressed && styles.pressed]}
+              >
+                <Text style={[styles.scheduleTitle, compactCard && styles.scheduleTitleCompact]} numberOfLines={compactCard ? 1 : 2} ellipsizeMode="tail">
+                  {entry.event.title}
+                </Text>
+                <Text style={[styles.scheduleCardEndTime, compactCard && styles.scheduleCardEndTimeCompact]} numberOfLines={isMultiDayEvent(entry.event) ? 2 : 1} ellipsizeMode="clip" adjustsFontSizeToFit minimumFontScale={0.85}>
+                  {formatScheduleEndLabel(entry.event)}
+                </Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
 function EventForm({
   draft,
   onChange,
-  onSave,
+  onOpenDatePicker,
+  onOpenTimePicker,
+  onOpenNotificationPicker,
 }: {
   draft: EventDraft;
   onChange: (draft: EventDraft) => void;
-  onSave: () => void;
+  onOpenDatePicker: (key?: TimeFieldKey) => void;
+  onOpenTimePicker: (key: TimeFieldKey) => void;
+  onOpenNotificationPicker: (key?: TimeFieldKey) => void;
 }) {
-  const update = (key: keyof EventDraft, value: string) => onChange({ ...draft, [key]: value });
+  const updateText = (key: 'title', value: string) => onChange({ ...draft, [key]: value });
 
   return (
     <ScrollView style={styles.formScreen} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-      <FormField label="タイトル" value={draft.title} onChangeText={(value) => update('title', value)} autoFocus />
-      <FormField label="日付" value={draft.date} onChangeText={(value) => update('date', value)} placeholder="YYYY-MM-DD" />
-      <View style={styles.timeFields}>
-        <FormField label="開始" value={draft.start} onChangeText={(value) => update('start', value)} placeholder="10:00" compact />
-        <FormField label="終了" value={draft.end} onChangeText={(value) => update('end', value)} placeholder="11:00" compact />
-      </View>
-      <FormField label="場所" value={draft.location} onChangeText={(value) => update('location', value)} />
-      <FormField label="通知" value={draft.notification} onChangeText={(value) => update('notification', value)} placeholder="10分前" />
-      <FormField label="メモ" value={draft.memo} onChangeText={(value) => update('memo', value)} multiline />
-
-      <Pressable onPress={onSave} style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}>
-        <Text style={styles.saveButtonText}>保存</Text>
-      </Pressable>
+      <FormField label="タイトル" value={draft.title} onChangeText={(value) => updateText('title', value)} autoFocus />
+      <DateTimeFormField
+        label="開始"
+        date={formatFullDate(draft.date)}
+        time={draft.start}
+        onPressDate={() => onOpenDatePicker('start')}
+        onPressTime={() => onOpenTimePicker('start')}
+      />
+      <DateTimeFormField
+        label="終了"
+        date={formatFullDate(draft.endDate)}
+        time={draft.end}
+        onPressDate={() => onOpenDatePicker('end')}
+        onPressTime={() => onOpenTimePicker('end')}
+      />
+      <NotificationFormField value={formatNotificationSummary(draft.startNotifications, '開始時刻')} onPress={onOpenNotificationPicker} />
     </ScrollView>
+  );
+
+  return (
+    <ScrollView style={styles.formScreen} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <FormField label="タイトル" value={draft.title} onChangeText={(value) => updateText('title', value)} autoFocus />
+      <DateFormField label="日付" value={formatFullDate(draft.date)} onPress={onOpenDatePicker} />
+      <TimeNotificationRow
+        label="開始"
+        time={draft.start}
+        notificationSummary={formatNotificationSummary(draft.startNotifications, '開始時刻')}
+        onPressTime={() => onOpenTimePicker('start')}
+        onPressNotification={() => onOpenNotificationPicker('start')}
+      />
+      <TimeNotificationRow
+        label="終了"
+        time={draft.end}
+        notificationSummary={formatNotificationSummary(draft.endNotifications, '終了時刻')}
+        onPressTime={() => onOpenTimePicker('end')}
+        onPressNotification={() => onOpenNotificationPicker('end')}
+      />
+    </ScrollView>
+  );
+}
+
+function DateFormField({ label, value, onPress }: { label: string; value: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.formField, pressed && styles.pressed]}>
+      <Text style={styles.formLabel}>{label}</Text>
+      <View style={styles.dateFormValue}>
+        <Text style={styles.dateFormValueText}>{value}</Text>
+        <DownChevron />
+      </View>
+    </Pressable>
+  );
+}
+
+function DateTimeFormField({
+  label,
+  date,
+  time,
+  onPressDate,
+  onPressTime,
+}: {
+  label: string;
+  date: string;
+  time: string;
+  onPressDate: () => void;
+  onPressTime: () => void;
+}) {
+  return (
+    <View style={styles.formField}>
+      <Text style={styles.formLabel}>{label}</Text>
+      <View style={styles.dateTimeFormRow}>
+        <Pressable onPress={onPressDate} style={({ pressed }) => [styles.dateTimeDateValue, pressed && styles.pressed]}>
+          <Text style={styles.dateFormValueText}>{date}</Text>
+          <DownChevron />
+        </Pressable>
+        <Pressable onPress={onPressTime} style={({ pressed }) => [styles.dateTimeTimeValue, pressed && styles.pressed]}>
+          <Text style={styles.dateFormValueText}>{time}</Text>
+          <DownChevron />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function NotificationFormField({ value, onPress }: { value: string; onPress: () => void }) {
+  return (
+    <View style={styles.formField}>
+      <Text style={styles.formLabel}>通知</Text>
+      <Pressable onPress={onPress} style={({ pressed }) => [styles.notificationFormValue, pressed && styles.pressed]}>
+        <Text style={styles.notificationFormValueText} numberOfLines={1} ellipsizeMode="tail">
+          {value}
+        </Text>
+        <DownChevron />
+      </Pressable>
+    </View>
+  );
+}
+
+function TimeNotificationRow({
+  label,
+  time,
+  notificationSummary,
+  onPressTime,
+  onPressNotification,
+}: {
+  label: string;
+  time: string;
+  notificationSummary: string;
+  onPressTime: () => void;
+  onPressNotification: () => void;
+}) {
+  return (
+    <View style={styles.formField}>
+      <View style={styles.timeNotificationLabels}>
+        <Text style={[styles.formLabel, styles.timeLabel]}>{label}</Text>
+        <Text style={[styles.formLabel, styles.notificationLabel]}>通知</Text>
+      </View>
+      <View style={styles.timeNotificationRow}>
+        <Pressable onPress={onPressTime} style={({ pressed }) => [styles.timeFormValue, pressed && styles.pressed]}>
+          <Text style={styles.dateFormValueText}>{time}</Text>
+          <DownChevron />
+        </Pressable>
+        <Pressable onPress={onPressNotification} style={({ pressed }) => [styles.notificationFormValue, pressed && styles.pressed]}>
+          <Text style={styles.notificationFormValueText} numberOfLines={1} ellipsizeMode="tail">
+            {notificationSummary}
+          </Text>
+          <DownChevron />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -1052,7 +2374,6 @@ function FormField({
   value,
   onChangeText,
   placeholder,
-  multiline,
   compact,
   autoFocus,
 }: {
@@ -1060,7 +2381,6 @@ function FormField({
   value: string;
   onChangeText: (value: string) => void;
   placeholder?: string;
-  multiline?: boolean;
   compact?: boolean;
   autoFocus?: boolean;
 }) {
@@ -1073,8 +2393,7 @@ function FormField({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={tokens.disabledText}
-        multiline={multiline}
-        style={[styles.formInput, multiline && styles.formInputMultiline]}
+        style={styles.formInput}
       />
     </View>
   );
@@ -1091,7 +2410,6 @@ const tokens = {
   hairline: '#EEEEEA',
   divider: '#E6E6E2',
   selected: '#EFEFED',
-  eventBlock: '#F4F4F2',
   dot: '#8E8E89',
   destructive: '#9B6A62',
 };
@@ -1118,30 +2436,44 @@ const styles = StyleSheet.create({
   calendarFadeLayer: {
     ...StyleSheet.absoluteFillObject,
   },
-  visibleCalendarLayer: {
-    opacity: 1,
-  },
   header: {
     height: 58,
     paddingHorizontal: 30,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    position: 'relative',
   },
   monthTitleButton: {
     minWidth: 120,
     height: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
     justifyContent: 'center',
+  },
+  centerMonthTitleButton: {
+    position: 'absolute',
+    left: 96,
+    right: 96,
+    top: 8,
+    height: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   headerSide: {
     width: 52,
   },
   headerActions: {
-    width: 132,
+    width: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: 14,
+  },
+  headerActionsWide: {
+    width: 88,
   },
   headerAction: {
     width: 24,
@@ -1163,49 +2495,96 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modeSegment: {
-    height: 36,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: tokens.hairline,
-    borderRadius: 18,
-    backgroundColor: tokens.subtleSurface,
-    padding: 2,
-  },
-  modeSegmentButton: {
-    width: 34,
-    height: 30,
-    borderRadius: 15,
+  gearIcon: {
+    width: 22,
+    height: 22,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
-  modeSegmentButtonActive: {
-    backgroundColor: tokens.selected,
-  },
-  monthGridIcon: {
-    width: 15,
-    height: 15,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    rowGap: 2.5,
-    columnGap: 2.5,
-  },
-  monthGridDot: {
-    width: 3.2,
-    height: 3.2,
-    borderRadius: 1.6,
-    backgroundColor: tokens.secondaryText,
-  },
-  weekLineIcon: {
-    width: 16,
-    height: 13,
-    justifyContent: 'space-between',
-  },
-  weekLine: {
-    height: 1.5,
+  gearTooth: {
+    position: 'absolute',
+    width: 1.4,
+    height: 4.8,
     borderRadius: 1,
     backgroundColor: tokens.secondaryText,
+  },
+  gearToothTop: {
+    top: 1,
+  },
+  gearToothTopRight: {
+    top: 3.1,
+    right: 4.1,
+    transform: [{ rotate: '45deg' }],
+  },
+  gearToothRight: {
+    right: 1,
+    transform: [{ rotate: '90deg' }],
+  },
+  gearToothBottomRight: {
+    right: 4.1,
+    bottom: 3.1,
+    transform: [{ rotate: '-45deg' }],
+  },
+  gearToothBottom: {
+    bottom: 1,
+  },
+  gearToothBottomLeft: {
+    left: 4.1,
+    bottom: 3.1,
+    transform: [{ rotate: '45deg' }],
+  },
+  gearToothLeft: {
+    left: 1,
+    transform: [{ rotate: '90deg' }],
+  },
+  gearToothTopLeft: {
+    top: 3.1,
+    left: 4.1,
+    transform: [{ rotate: '-45deg' }],
+  },
+  gearOuterRing: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1.4,
+    borderColor: tokens.secondaryText,
+    backgroundColor: tokens.surface,
+  },
+  gearInnerRing: {
+    position: 'absolute',
+    width: 4.8,
+    height: 4.8,
+    borderRadius: 2.4,
+    borderWidth: 1.2,
+    borderColor: tokens.secondaryText,
+    backgroundColor: tokens.surface,
+  },
+  downChevronIcon: {
+    width: 12,
+    height: 24,
+    position: 'relative',
+    marginTop: 3,
+  },
+  downChevronLineLeft: {
+    position: 'absolute',
+    left: 2,
+    top: 10,
+    width: 6,
+    height: 1.6,
+    borderRadius: 1,
+    backgroundColor: tokens.secondaryText,
+    transform: [{ rotate: '45deg' }],
+  },
+  downChevronLineRight: {
+    position: 'absolute',
+    right: 1.5,
+    top: 10,
+    width: 6,
+    height: 1.6,
+    borderRadius: 1,
+    backgroundColor: tokens.secondaryText,
+    transform: [{ rotate: '-45deg' }],
   },
   todayIcon: {
     width: 18,
@@ -1282,7 +2661,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  selectedDateCircle: {
+  selectedDateCircleFill: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 999,
     backgroundColor: tokens.selected,
   },
   dateText: {
@@ -1292,50 +2673,41 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
-  mutedDateText: {
-    color: tokens.disabledText,
-  },
-  dotContainer: {
-    height: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  eventDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: tokens.dot,
-  },
-  sectionLine: {
-    height: 1,
-    backgroundColor: tokens.hairline,
-    marginTop: 24,
-  },
   scheduleScroll: {
     flex: 1,
   },
   scheduleList: {
-    paddingHorizontal: 30,
-    paddingTop: 26,
+    paddingHorizontal: 32,
+    paddingTop: 24,
     paddingBottom: 88,
   },
   selectedDateText: {
     color: tokens.text,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 18,
+    lineHeight: 24,
     fontWeight: '400',
-    marginBottom: 14,
+    marginBottom: 28,
   },
-  scheduleRow: {
-    minHeight: 72,
-    borderBottomColor: tokens.hairline,
-    borderBottomWidth: 1,
+  scheduleTimeline: {
+    gap: scheduleTimelineGroupGap,
+    position: 'relative',
+  },
+  scheduleTimelineOverlay: {
+    position: 'absolute',
+    left: 116,
+    right: 0,
+    top: 0,
+    zIndex: 2,
+  },
+  scheduleTimelineGroup: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
-  scheduleTime: {
-    width: 62,
-    gap: 5,
+  scheduleTimelineTimes: {
+    width: 58,
+    justifyContent: 'flex-start',
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   scheduleStart: {
     color: tokens.secondaryText,
@@ -1351,11 +2723,69 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
+  scheduleTimelineMarker: {
+    width: 40,
+    alignItems: 'center',
+  },
+  scheduleDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#D8D8D4',
+    marginTop: 4,
+  },
+  scheduleLine: {
+    width: 1,
+    flex: 1,
+    backgroundColor: tokens.hairline,
+    marginTop: 10,
+  },
+  scheduleTimelineCards: {
+    flex: 1,
+    position: 'relative',
+    marginLeft: 18,
+  },
+  scheduleTimelineCardSlot: {
+    position: 'absolute',
+    paddingHorizontal: 3,
+  },
+  scheduleTimelineCardSlotCompact: {
+    paddingHorizontal: 2,
+  },
+  scheduleTimelineCard: {
+    flex: 1,
+    borderRadius: 7,
+    backgroundColor: '#F3F2F0',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    overflow: 'hidden',
+  },
+  scheduleTimelineCardCompact: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
   scheduleTitle: {
     color: tokens.text,
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '400',
+  },
+  scheduleTitleCompact: {
+    fontSize: 13,
+    lineHeight: 17,
+  },
+  scheduleCardEndTime: {
+    color: tokens.tertiaryText,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+    marginTop: 4,
+  },
+  scheduleCardEndTimeCompact: {
+    fontSize: 10,
+    lineHeight: 13,
+    marginTop: 2,
   },
   emptyText: {
     color: tokens.tertiaryText,
@@ -1369,6 +2799,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(250, 250, 248, 0.72)',
     justifyContent: 'flex-end',
   },
+  pickerBackdropPress: {
+    ...StyleSheet.absoluteFillObject,
+  },
   pickerSheet: {
     backgroundColor: tokens.surface,
     borderTopLeftRadius: 24,
@@ -1376,6 +2809,333 @@ const styles = StyleSheet.create({
     borderColor: tokens.hairline,
     borderWidth: 1,
     paddingBottom: 34,
+  },
+  settingsBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(34, 34, 34, 0.18)',
+    justifyContent: 'flex-end',
+  },
+  settingsBackdropPress: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  settingsSheet: {
+    height: '94%',
+    backgroundColor: tokens.surface,
+    borderTopLeftRadius: 34,
+    borderTopRightRadius: 34,
+    paddingTop: 28,
+    paddingBottom: 30,
+    boxShadow: '0 -10px 34px rgba(0, 0, 0, 0.08)',
+    position: 'relative',
+  },
+  settingsCloseButton: {
+    position: 'absolute',
+    top: 22,
+    right: 28,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  settingsHandle: {
+    width: 66,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#D8D8D6',
+    alignSelf: 'center',
+    marginBottom: 30,
+  },
+  settingsTitle: {
+    color: tokens.secondaryText,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
+    textAlign: 'center',
+    marginBottom: 34,
+  },
+  settingsContent: {
+    paddingHorizontal: 32,
+    paddingBottom: 40,
+  },
+  settingsSection: {
+    marginBottom: 36,
+  },
+  settingsRow: {
+    minHeight: 62,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 18,
+  },
+  settingsRowText: {
+    flex: 1,
+  },
+  settingsRowTitle: {
+    color: tokens.text,
+    fontSize: 18,
+    lineHeight: 25,
+    fontWeight: '400',
+  },
+  settingsRowSubtitle: {
+    color: tokens.secondaryText,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '400',
+    marginTop: 3,
+  },
+  settingsChevron: {
+    width: 24,
+    color: tokens.tertiaryText,
+    fontSize: 34,
+    lineHeight: 36,
+    fontWeight: '200',
+    textAlign: 'right',
+  },
+  proScreen: {
+    flex: 1,
+  },
+  proContent: {
+    paddingHorizontal: 30,
+    paddingTop: 78,
+    paddingBottom: 44,
+  },
+  proHero: {
+    marginBottom: 58,
+  },
+  proHeroTitle: {
+    color: tokens.text,
+    fontSize: 32,
+    lineHeight: 39,
+    fontWeight: '300',
+  },
+  proHeroSubtitle: {
+    color: tokens.secondaryText,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+    marginTop: 14,
+  },
+  proFeatureList: {
+    marginBottom: 62,
+  },
+  proFeatureRow: {
+    minHeight: 90,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  proFeatureText: {
+    flex: 1,
+  },
+  proFeatureTitle: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  proFeatureDescription: {
+    color: tokens.secondaryText,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '400',
+    marginTop: 7,
+  },
+  proChevron: {
+    width: 24,
+    color: tokens.tertiaryText,
+    fontSize: 32,
+    lineHeight: 34,
+    fontWeight: '200',
+    textAlign: 'right',
+  },
+  proPlanSection: {
+    marginBottom: 64,
+  },
+  proSectionLabel: {
+    color: tokens.tertiaryText,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+    marginBottom: 18,
+  },
+  proPlanCard: {
+    borderWidth: 1,
+    borderColor: tokens.hairline,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: tokens.surface,
+  },
+  proPlanRow: {
+    minHeight: 66,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  proPlanName: {
+    color: tokens.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  proPlanValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 20,
+  },
+  proPlanPrice: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+  },
+  proPlanCheck: {
+    color: tokens.secondaryText,
+    fontSize: 18,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  proCancelText: {
+    color: tokens.tertiaryText,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '400',
+    marginTop: 18,
+  },
+  proActions: {
+    gap: 22,
+    alignItems: 'center',
+  },
+  proStartButton: {
+    height: 58,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: tokens.divider,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: tokens.surface,
+  },
+  proStartButtonText: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  proRestoreText: {
+    color: tokens.tertiaryText,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  notificationSettingsScreen: {
+    flex: 1,
+  },
+  notificationSettingsContent: {
+    paddingHorizontal: 30,
+    paddingTop: 96,
+    paddingBottom: 64,
+  },
+  notificationSettingsGroup: {
+    marginBottom: 46,
+  },
+  notificationSettingsRow: {
+    minHeight: 90,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 18,
+  },
+  notificationSettingsTitle: {
+    color: tokens.text,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
+  },
+  notificationSwitchFrame: {
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationSettingsValueGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  notificationSettingsValue: {
+    color: tokens.secondaryText,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+  },
+  notificationSettingsChevron: {
+    color: tokens.tertiaryText,
+    fontSize: 34,
+    lineHeight: 36,
+    fontWeight: '200',
+  },
+  backupScreen: {
+    flex: 1,
+  },
+  backupContent: {
+    paddingHorizontal: 30,
+    paddingTop: 96,
+    paddingBottom: 64,
+  },
+  backupList: {
+  },
+  backupRow: {
+    minHeight: 104,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 18,
+  },
+  backupRowTitle: {
+    color: tokens.text,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
+  },
+  backupSwitchFrame: {
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backupRowValue: {
+    color: tokens.secondaryText,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+  },
+  backupChevron: {
+    color: tokens.tertiaryText,
+    fontSize: 34,
+    lineHeight: 36,
+    fontWeight: '200',
+  },
+  backupDescription: {
+    paddingTop: 42,
+    gap: 12,
+  },
+  backupDescriptionText: {
+    color: tokens.tertiaryText,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  notificationSheet: {
+    backgroundColor: tokens.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderColor: tokens.hairline,
+    borderWidth: 1,
+    paddingBottom: 28,
   },
   pickerHeader: {
     height: 54,
@@ -1392,48 +3152,84 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '400',
   },
-  pickerAction: {
+  pickerIconButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeIconText: {
     color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 24,
+    lineHeight: 26,
+    fontWeight: '300',
+  },
+  checkIconText: {
+    color: tokens.secondaryText,
+    fontSize: 20,
+    lineHeight: 22,
     fontWeight: '400',
   },
   pickerColumns: {
-    height: 224,
+    height: pickerColumnHeight,
     flexDirection: 'row',
     paddingHorizontal: 48,
     paddingTop: 16,
     gap: 28,
   },
+  datePickerColumns: {
+    height: pickerColumnHeight,
+    flexDirection: 'row',
+    paddingHorizontal: 28,
+    paddingTop: 16,
+    gap: 16,
+  },
   pickerColumn: {
     flex: 1,
   },
   pickerColumnContent: {
-    paddingVertical: 70,
+    paddingVertical: (pickerColumnHeight - pickerItemHeight) / 2,
   },
   pickerItem: {
-    height: 38,
+    height: pickerItemHeight,
     alignItems: 'center',
     justifyContent: 'center',
   },
   pickerItemText: {
-    color: tokens.tertiaryText,
+    color: tokens.text,
     fontSize: 17,
     lineHeight: 22,
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
-  pickerItemTextSelected: {
+  notificationOptions: {
+    paddingHorizontal: 30,
+    paddingTop: 10,
+  },
+  notificationOption: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationOptionText: {
     color: tokens.text,
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '400',
   },
   addButton: {
     position: 'absolute',
     right: 28,
     bottom: 34,
-    width: 52,
-    height: 52,
+    width: 60,
+    height: 60,
     borderRadius: 999,
     backgroundColor: tokens.surface,
     borderColor: tokens.hairline,
@@ -1444,160 +3240,9 @@ const styles = StyleSheet.create({
   },
   addButtonText: {
     color: tokens.secondaryText,
-    fontSize: 28,
-    lineHeight: 30,
+    fontSize: 32,
+    lineHeight: 34,
     fontWeight: '300',
-  },
-  weekScreen: {
-    flex: 1,
-  },
-  weekSwipeArea: {
-    overflow: 'hidden',
-  },
-  dayMiniCalendar: {
-    borderBottomColor: tokens.hairline,
-    borderBottomWidth: 1,
-    paddingBottom: 10,
-  },
-  dayStrip: {
-    flexDirection: 'row',
-    paddingHorizontal: 30,
-    paddingTop: 12,
-  },
-  dayStripCell: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  dayStripCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dayStripText: {
-    color: tokens.text,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '400',
-    fontVariant: ['tabular-nums'],
-  },
-  timelineScroll: {
-    flex: 1,
-  },
-  timelineContent: {
-    paddingBottom: 52,
-  },
-  timeline: {
-    height: hourHeight * 24,
-    position: 'relative',
-    paddingLeft: 24,
-    paddingRight: 24,
-  },
-  hourRow: {
-    height: hourHeight,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  hourText: {
-    width: 44,
-    color: tokens.tertiaryText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '400',
-    fontVariant: ['tabular-nums'],
-  },
-  hourLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: tokens.hairline,
-  },
-  timelineEvent: {
-    position: 'absolute',
-    left: 74,
-    right: 24,
-    borderRadius: 10,
-    backgroundColor: tokens.eventBlock,
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  timelineTitle: {
-    color: tokens.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '400',
-  },
-  timelineEmpty: {
-    position: 'absolute',
-    top: hourHeight * 9,
-    left: 74,
-    color: tokens.tertiaryText,
-    fontSize: 13,
-    lineHeight: 20,
-    fontWeight: '400',
-  },
-  detailScreen: {
-    flex: 1,
-  },
-  detailContent: {
-    paddingHorizontal: 32,
-    paddingTop: 90,
-    paddingBottom: 48,
-  },
-  detailTitle: {
-    color: tokens.text,
-    fontSize: 23,
-    lineHeight: 31,
-    fontWeight: '400',
-    marginBottom: 26,
-  },
-  detailMeta: {
-    color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 20,
-    fontWeight: '400',
-  },
-  detailText: {
-    color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 22,
-    fontWeight: '400',
-    marginTop: 28,
-  },
-  detailActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 36,
-  },
-  editButton: {
-    width: 80,
-    height: 34,
-    borderRadius: 12,
-    borderColor: tokens.divider,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  editButtonText: {
-    color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '400',
-  },
-  deleteButton: {
-    width: 80,
-    height: 34,
-    borderRadius: 12,
-    borderColor: tokens.divider,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  deleteButtonText: {
-    color: tokens.destructive,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '400',
   },
   formScreen: {
     flex: 1,
@@ -1630,28 +3275,85 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     paddingVertical: 8,
   },
-  formInputMultiline: {
-    minHeight: 96,
-    textAlignVertical: 'top',
+  dateFormValue: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
   },
-  timeFields: {
+  dateFormValueText: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+    fontVariant: ['tabular-nums'],
+  },
+  dateTimeFormRow: {
+    flexDirection: 'row',
+    gap: 14,
+  },
+  dateTimeDateValue: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    flex: 1.25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  dateTimeTimeValue: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    flex: 0.75,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  timeNotificationRow: {
     flexDirection: 'row',
     gap: 18,
   },
-  saveButton: {
-    width: 82,
-    height: 34,
-    borderRadius: 12,
-    borderColor: tokens.divider,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 16,
+  timeNotificationLabels: {
+    flexDirection: 'row',
+    gap: 18,
   },
-  saveButtonText: {
+  timeLabel: {
+    flex: 0.72,
+  },
+  notificationLabel: {
+    flex: 1,
+  },
+  timeFormValue: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    flex: 0.72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  notificationFormValue: {
+    minHeight: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.hairline,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  notificationFormValueText: {
     color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 18,
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '400',
   },
   pressed: {

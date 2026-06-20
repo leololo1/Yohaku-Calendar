@@ -21,6 +21,7 @@ Allowed:
 
 Avoid:
 
+- instant screen or view changes
 - bounce
 - playful motion
 - confetti
@@ -34,6 +35,11 @@ Avoid:
 Use calm page transitions.
 
 Prefer soft fades or gentle slides.
+
+All screen and view changes must feel smooth.
+Do not switch instantly or abruptly.
+
+When changing screens, opening or closing views, replacing visible content, or moving between states, use a quiet fade in/out, slide in/out, or similarly smooth transition.
 
 Transitions should never draw more attention than the schedule content itself.
 
