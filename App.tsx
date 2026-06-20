@@ -4,7 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
 import { CloudStorage } from 'react-native-cloud-storage';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import YohakuTodayWidget, { type YohakuTodayWidgetProps } from './widgets/YohakuTodayWidget';
+import type { YohakuTodayWidgetProps } from './widgets/YohakuTodayWidget';
 import {
   Alert,
   Animated,
@@ -730,6 +730,11 @@ const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
 
 const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
   try {
+    const YohakuTodayWidget = require('./widgets/YohakuTodayWidget').default as {
+      updateSnapshot: (props: YohakuTodayWidgetProps) => void;
+      updateTimeline: (entries: ReturnType<typeof buildYohakuTodayWidgetTimeline>) => void;
+    };
+
     YohakuTodayWidget.updateSnapshot(buildYohakuTodayWidgetProps(events));
     YohakuTodayWidget.updateTimeline(buildYohakuTodayWidgetTimeline(events));
   } catch {
