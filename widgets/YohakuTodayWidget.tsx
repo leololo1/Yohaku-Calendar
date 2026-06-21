@@ -23,7 +23,12 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
   var rows = events.slice(0, maxRows);
   var children = [
     _jsx(Text, {
-      modifiers: [font({ size: 17, weight: 'semibold' }), foregroundStyle('#222222')],
+      modifiers: [
+        font({ size: 17, weight: 'semibold' }),
+        foregroundStyle('#222222'),
+        multilineTextAlignment('leading'),
+        containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
+      ],
       children: dateLabel
     })
   ];
@@ -41,16 +46,25 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
         _jsxs(HStack, {
           spacing: 18,
           alignment: 'center',
-          modifiers: [padding({ top: 5, bottom: 5 })],
+          modifiers: [
+            padding({ top: 5, bottom: 5 }),
+            containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
+          ],
           children: [
             _jsx(Text, {
               modifiers: [font({ size: 13, weight: 'medium' }), foregroundStyle('#555555'), frame({ width: 54, alignment: 'leading' })],
               children: event.time || ''
             }),
             _jsx(Text, {
-              modifiers: [font({ size: 14, weight: 'semibold' }), foregroundStyle('#222222'), lineLimit(1)],
+              modifiers: [
+                font({ size: 14, weight: 'semibold' }),
+                foregroundStyle('#222222'),
+                lineLimit(1),
+                multilineTextAlignment('leading')
+              ],
               children: event.title || ''
-            })
+            }),
+            _jsx(Spacer, {})
           ]
         })
       );
@@ -60,7 +74,10 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
   return _jsx(VStack, {
     alignment: 'leading',
     spacing: 11,
-    modifiers: [padding({ top: 18, bottom: 16, leading: 18, trailing: 18 })],
+    modifiers: [
+      padding({ top: 18, bottom: 16, leading: 18, trailing: 18 }),
+      containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
+    ],
     children: children
   });
 }`;
