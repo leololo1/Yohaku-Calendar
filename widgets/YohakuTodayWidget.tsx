@@ -1,5 +1,3 @@
-import { HStack, Spacer, Text, VStack } from '@expo/ui/swift-ui';
-import { font, foregroundStyle, lineLimit, padding } from '@expo/ui/swift-ui/modifiers';
 import { createWidget, type WidgetEnvironment } from 'expo-widgets';
 
 export type YohakuTodayWidgetEvent = {
@@ -13,50 +11,80 @@ export type YohakuTodayWidgetProps = {
   totalCount?: number;
 };
 
-function normalizeProps(props: YohakuTodayWidgetProps) {
-  const events = Array.isArray(props.events) ? props.events : [];
+type YohakuTodayWidgetRenderer = (
+  props: YohakuTodayWidgetProps,
+  environment: WidgetEnvironment
+) => React.JSX.Element;
 
-  return {
-    dateLabel: props.dateLabel || 'Today',
-    events,
-    totalCount: typeof props.totalCount === 'number' ? props.totalCount : events.length,
-  };
-}
+const yohakuTodayWidgetLayout = `function(props, environment) {
+  var events = Array.isArray(props.events) ? props.events : [];
+  var dateLabel = props.dateLabel || 'Today';
+  var totalCount = typeof props.totalCount === 'number' ? props.totalCount : events.length;
+  var rows = events.slice(0, environment && environment.widgetFamily === 'systemSmall' ? 2 : 3);
+  var remainingCount = Math.max(0, totalCount - rows.length);
+  var children = [
+    _jsxs(HStack, {
+      children: [
+        _jsx(Text, {
+          modifiers: [font({ size: 17, weight: 'semibold' }), foregroundStyle('#222222')],
+          children: dateLabel
+        }),
+        _jsx(Spacer, {}),
+        _jsxs(Text, {
+          modifiers: [font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')],
+          children: [totalCount, '\\u4EF6']
+        })
+      ]
+    })
+  ];
 
-const EventRow = ({ event }: { event: YohakuTodayWidgetEvent }) => (
-  <HStack modifiers={[padding({ top: 3, bottom: 3 })]}>
-    <Text modifiers={[font({ size: 13, weight: 'medium' }), foregroundStyle('#777777')]}>{event.time}</Text>
-    <Text modifiers={[font({ size: 14, weight: 'semibold' }), foregroundStyle('#222222'), lineLimit(1)]}>{event.title}</Text>
-  </HStack>
+  if (rows.length === 0) {
+    children.push(
+      _jsx(Text, {
+        modifiers: [font({ size: 14, weight: 'medium' }), foregroundStyle('#AAAAAA')],
+        children: '\\u4E88\\u5B9A\\u306F\\u3042\\u308A\\u307E\\u305B\\u3093'
+      })
+    );
+  } else {
+    rows.forEach(function(event) {
+      children.push(
+        _jsxs(HStack, {
+          modifiers: [padding({ top: 3, bottom: 3 })],
+          children: [
+            _jsx(Text, {
+              modifiers: [font({ size: 13, weight: 'medium' }), foregroundStyle('#777777')],
+              children: event.time || ''
+            }),
+            _jsx(Text, {
+              modifiers: [font({ size: 14, weight: 'semibold' }), foregroundStyle('#222222'), lineLimit(1)],
+              children: event.title || ''
+            })
+          ]
+        })
+      );
+    });
+  }
+
+  if (remainingCount > 0) {
+    children.push(
+      _jsxs(Text, {
+        modifiers: [font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')],
+        children: ['\\u307B\\u304B', remainingCount, '\\u4EF6']
+      })
+    );
+  }
+
+  return _jsx(VStack, {
+    spacing: 8,
+    modifiers: [padding({ top: 16, bottom: 16, leading: 16, trailing: 16 })],
+    children: children
+  });
+}`;
+
+const Widget = createWidget<YohakuTodayWidgetProps>(
+  'YohakuTodayWidget',
+  yohakuTodayWidgetLayout as unknown as YohakuTodayWidgetRenderer
 );
-
-const EmptyState = () => (
-  <Text modifiers={[font({ size: 14, weight: 'medium' }), foregroundStyle('#AAAAAA')]}>予定はありません</Text>
-);
-
-const YohakuTodayWidget = (props: YohakuTodayWidgetProps, environment: WidgetEnvironment) => {
-  'widget';
-
-  const { dateLabel, events, totalCount } = normalizeProps(props);
-  const rows = events.slice(0, environment.widgetFamily === 'systemSmall' ? 2 : 3);
-  const remainingCount = Math.max(0, totalCount - rows.length);
-
-  return (
-    <VStack spacing={8} modifiers={[padding({ top: 16, bottom: 16, leading: 16, trailing: 16 })]}>
-      <HStack>
-        <Text modifiers={[font({ size: 17, weight: 'semibold' }), foregroundStyle('#222222')]}>{dateLabel}</Text>
-        <Spacer />
-        <Text modifiers={[font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')]}>{totalCount}件</Text>
-      </HStack>
-      {rows.length === 0 ? <EmptyState /> : rows.map((event, index) => <EventRow key={`${event.time}-${event.title}-${index}`} event={event} />)}
-      {remainingCount > 0 ? (
-        <Text modifiers={[font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')]}>ほか{remainingCount}件</Text>
-      ) : null}
-    </VStack>
-  );
-};
-
-const Widget = createWidget<YohakuTodayWidgetProps>('YohakuTodayWidget', YohakuTodayWidget);
 
 Widget.updateSnapshot({
   dateLabel: 'Today',
