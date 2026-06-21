@@ -217,8 +217,10 @@ const formatShortDateTitle = (dateKey: string) => {
 
 const formatWidgetDateTitle = (dateKey: string) => {
   const date = parseDateKey(dateKey);
-  return `${date.getMonth() + 1}.${date.getDate()}（${weekdays[date.getDay()]}）`;
+  return `${date.getMonth() + 1}.${date.getDate()}`;
 };
+
+const formatWidgetMonthTitle = (date: Date) => `${date.getFullYear()}.${date.getMonth() + 1}`;
 
 const formatFullDate = (dateKey: string) => {
   const date = parseDateKey(dateKey);
@@ -704,13 +706,23 @@ const createMonthDays = (visibleMonth: Date, selectedDate: string, events: Calen
 
 const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date()): YohakuTodayWidgetProps => {
   const dateKey = toDateKey(date);
+  const visibleMonth = new Date(date.getFullYear(), date.getMonth(), 1);
   const dayEvents = sortEventsForDate(
     events.filter((event) => eventOccursOnDate(event, dateKey)),
     dateKey,
   );
+  const calendarDays = createMonthDays(visibleMonth, dateKey, events);
 
   return {
     dateLabel: formatWidgetDateTitle(dateKey),
+    monthLabel: formatWidgetMonthTitle(date),
+    calendarDays: calendarDays.map((day) => ({
+      key: day.key,
+      label: day.label,
+      muted: day.muted,
+      selected: day.selected,
+      eventCount: day.eventCount,
+    })),
     totalCount: dayEvents.length,
     events: dayEvents.slice(0, 6).map((event) => ({
       title: event.title,
