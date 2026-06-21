@@ -215,6 +215,11 @@ const formatShortDateTitle = (dateKey: string) => {
   return `${date.getMonth() + 1}.${date.getDate()}`;
 };
 
+const formatWidgetDateTitle = (dateKey: string) => {
+  const date = parseDateKey(dateKey);
+  return `${date.getMonth() + 1}.${date.getDate()}（${weekdays[date.getDay()]}）`;
+};
+
 const formatFullDate = (dateKey: string) => {
   const date = parseDateKey(dateKey);
   return `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()}`;
@@ -705,7 +710,7 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
   );
 
   return {
-    dateLabel: formatShortDateTitle(dateKey),
+    dateLabel: formatWidgetDateTitle(dateKey),
     totalCount: dayEvents.length,
     events: dayEvents.slice(0, 6).map((event) => ({
       title: event.title,

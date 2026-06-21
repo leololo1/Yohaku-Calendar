@@ -19,22 +19,12 @@ type YohakuTodayWidgetRenderer = (
 const yohakuTodayWidgetLayout = `function(props, environment) {
   var events = Array.isArray(props.events) ? props.events : [];
   var dateLabel = props.dateLabel || 'Today';
-  var totalCount = typeof props.totalCount === 'number' ? props.totalCount : events.length;
-  var rows = events.slice(0, environment && environment.widgetFamily === 'systemSmall' ? 2 : 3);
-  var remainingCount = Math.max(0, totalCount - rows.length);
+  var maxRows = environment && environment.widgetFamily === 'systemLarge' ? 6 : 3;
+  var rows = events.slice(0, maxRows);
   var children = [
-    _jsxs(HStack, {
-      children: [
-        _jsx(Text, {
-          modifiers: [font({ size: 17, weight: 'semibold' }), foregroundStyle('#222222')],
-          children: dateLabel
-        }),
-        _jsx(Spacer, {}),
-        _jsxs(Text, {
-          modifiers: [font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')],
-          children: [totalCount, '\\u4EF6']
-        })
-      ]
+    _jsx(Text, {
+      modifiers: [font({ size: 17, weight: 'semibold' }), foregroundStyle('#222222')],
+      children: dateLabel
     })
   ];
 
@@ -49,10 +39,12 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
     rows.forEach(function(event) {
       children.push(
         _jsxs(HStack, {
-          modifiers: [padding({ top: 3, bottom: 3 })],
+          spacing: 18,
+          alignment: 'center',
+          modifiers: [padding({ top: 5, bottom: 5 })],
           children: [
             _jsx(Text, {
-              modifiers: [font({ size: 13, weight: 'medium' }), foregroundStyle('#777777')],
+              modifiers: [font({ size: 13, weight: 'medium' }), foregroundStyle('#555555'), frame({ width: 54, alignment: 'leading' })],
               children: event.time || ''
             }),
             _jsx(Text, {
@@ -65,18 +57,10 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
     });
   }
 
-  if (remainingCount > 0) {
-    children.push(
-      _jsxs(Text, {
-        modifiers: [font({ size: 12, weight: 'medium' }), foregroundStyle('#777777')],
-        children: ['\\u307B\\u304B', remainingCount, '\\u4EF6']
-      })
-    );
-  }
-
   return _jsx(VStack, {
-    spacing: 8,
-    modifiers: [padding({ top: 16, bottom: 16, leading: 16, trailing: 16 })],
+    alignment: 'leading',
+    spacing: 11,
+    modifiers: [padding({ top: 18, bottom: 16, leading: 18, trailing: 18 })],
     children: children
   });
 }`;

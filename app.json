@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -57,7 +57,8 @@
               "contentMarginsDisabled": true,
               "supportedFamilies": [
                 "systemSmall",
-                "systemMedium"
+                "systemMedium",
+                "systemLarge"
               ]
             }
           ]
