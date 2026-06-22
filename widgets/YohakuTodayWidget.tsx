@@ -169,11 +169,11 @@ const yohakuTodayWidgetLayout = `function(props, environment) {
 
   if (isMedium) {
     return _jsxs(HStack, {
-      alignment: 'top',
+      alignment: 'center',
       spacing: 8,
       modifiers: [
         padding({ top: 10, bottom: 10, leading: 10, trailing: 8 }),
-        containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
+        containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })
       ],
       children: [
         renderCalendar(),
