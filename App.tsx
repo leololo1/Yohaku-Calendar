@@ -727,6 +727,7 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
     events: dayEvents.slice(0, 6).map((event) => ({
       title: event.title,
       time: event.start,
+      end: event.end,
     })),
   };
 };
@@ -747,13 +748,26 @@ const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
 
 const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
   try {
-    const YohakuTodayWidget = require('./widgets/YohakuTodayWidget').default as {
+    type YohakuWidgetApi = {
       updateSnapshot: (props: YohakuTodayWidgetProps) => void;
       updateTimeline: (entries: ReturnType<typeof buildYohakuTodayWidgetTimeline>) => void;
     };
+    const YohakuWidgets = require('./widgets/YohakuTodayWidget') as {
+      default: YohakuWidgetApi;
+      YohakuCalendarWidget: YohakuWidgetApi;
+      YohakuTimelineWidget: YohakuWidgetApi;
+    };
+    const snapshot = buildYohakuTodayWidgetProps(events);
+    const timeline = buildYohakuTodayWidgetTimeline(events);
 
-    YohakuTodayWidget.updateSnapshot(buildYohakuTodayWidgetProps(events));
-    YohakuTodayWidget.updateTimeline(buildYohakuTodayWidgetTimeline(events));
+    [
+      YohakuWidgets.default,
+      YohakuWidgets.YohakuCalendarWidget,
+      YohakuWidgets.YohakuTimelineWidget,
+    ].forEach((widget) => {
+      widget.updateSnapshot(snapshot);
+      widget.updateTimeline(timeline);
+    });
   } catch {
     // Widget APIs are native-only and can be unavailable in non-native runtimes.
   }

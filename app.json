@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "10",
+      "buildNumber": "11",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -59,6 +59,24 @@
                 "systemSmall",
                 "systemMedium",
                 "systemLarge"
+              ]
+            },
+            {
+              "name": "YohakuCalendarWidget",
+              "displayName": "カレンダー",
+              "description": "カレンダーを表示します",
+              "contentMarginsDisabled": true,
+              "supportedFamilies": [
+                "systemSmall"
+              ]
+            },
+            {
+              "name": "YohakuTimelineWidget",
+              "displayName": "タイムライン",
+              "description": "今日の予定をタイムラインで表示します",
+              "contentMarginsDisabled": true,
+              "supportedFamilies": [
+                "systemMedium"
               ]
             }
           ]
