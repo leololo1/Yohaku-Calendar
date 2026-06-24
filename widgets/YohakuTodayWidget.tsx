@@ -112,10 +112,10 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
 
   function renderCalendar(size) {
     var config = size === 'large'
-      ? { width: 304, height: 196, cell: 25, title: 17, weekday: 11, day: 14, rowSpacing4: 8, rowSpacing5: 4, rowSpacing6: 2, columnSpacing: 15 }
+      ? { width: 316, height: 196, cell: 25, title: 17, weekday: 11, day: 14, rowSpacing4: 8, rowSpacing5: 4, rowSpacing6: 2, columnSpacing: 23 }
       : size === 'small'
         ? { width: 136, height: 132, cell: 18, title: 15, weekday: 9, day: 11, rowSpacing4: 6, rowSpacing5: 3, rowSpacing6: 1, columnSpacing: 1 }
-        : { width: 168, height: 124, outerHeight: 136, cell: 19, title: 14, weekday: 9, day: 12, rowSpacing4: 7, rowSpacing5: 1, rowSpacing6: 0, columnSpacing: 5 };
+        : { width: 160, height: 124, outerHeight: 136, cell: 19, title: 14, weekday: 9, day: 12, rowSpacing4: 7, rowSpacing5: 1, rowSpacing6: 0, columnSpacing: 3 };
     var weekdayLabels = ['\\u65E5', '\\u6708', '\\u706B', '\\u6C34', '\\u6728', '\\u91D1', '\\u571F'];
     var children = [];
     var activeWeekStarts = [];
@@ -291,12 +291,13 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
     var tightCards = compact || !fillContainer;
     var railWidth = compact ? 72 : 72;
     var timeWidth = compact ? 40 : 42;
-    var railHeight = compact ? 82 : 98;
     var halfCardWidth = compact ? 92 : 112;
     var fullCardWidth = compact ? 192 : 232;
     var topCardHeight = compact ? 38 : 45;
     var bottomCardHeight = compact ? 36 : 45;
     var cardGap = compact ? 8 : 8;
+    var hasSecondTimelineRow = rows.length > 2;
+    var railHeight = hasSecondTimelineRow ? topCardHeight + cardGap + bottomCardHeight : topCardHeight;
     var timelineHeight = compact ? 107 : 124;
     var titleSize = compact ? 12 : 13;
     var endSize = compact ? 10 : 11;
@@ -333,9 +334,43 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
     }
 
     var first = rows[0];
-    var last = rows[rows.length - 1];
-    var bottomTime = rows.length > 1 ? (last.time || last.end || '') : (first.end || first.time || '');
+    var secondRowTime = hasSecondTimelineRow ? (rows[2].time || '') : '';
     var cardChildren = [];
+    var timeChildren = [
+      _jsx(Text, {
+        modifiers: [
+          font({ size: timeSize, weight: 'regular' }),
+          foregroundStyle('#666666'),
+          frame({ width: timeWidth, height: hasSecondTimelineRow ? topCardHeight + cardGap : railHeight, alignment: 'topLeading' })
+        ],
+        children: first.time || ''
+      })
+    ];
+    var markerChildren = [
+      _jsx(Circle, { modifiers: [foregroundStyle('#D4D4D0'), frame({ width: 7, height: 7 })] })
+    ];
+
+    if (hasSecondTimelineRow) {
+      timeChildren.push(
+        _jsx(Text, {
+          modifiers: [
+            font({ size: timeSize, weight: 'regular' }),
+            foregroundStyle('#666666'),
+            frame({ width: timeWidth, height: bottomCardHeight, alignment: 'topLeading' })
+          ],
+          children: secondRowTime
+        })
+      );
+      markerChildren.push(
+        _jsx(Rectangle, { modifiers: [foregroundStyle('#E1E1DE'), frame({ width: 1, height: Math.max(12, topCardHeight + cardGap - 7) })] }),
+        _jsx(Circle, { modifiers: [foregroundStyle('#D4D4D0'), frame({ width: 7, height: 7 })] }),
+        _jsx(Rectangle, { modifiers: [foregroundStyle('#E1E1DE'), frame({ width: 1, height: Math.max(12, bottomCardHeight - 7) })] })
+      );
+    } else {
+      markerChildren.push(
+        _jsx(Rectangle, { modifiers: [foregroundStyle('#E1E1DE'), frame({ width: 1, height: Math.max(20, railHeight - 7) })] })
+      );
+    }
 
     if (rows.length === 1) {
       cardChildren.push(renderEventCard(first, fullCardWidth, topCardHeight, titleSize, endSize, tightCards));
@@ -378,27 +413,13 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
                   alignment: 'leading',
                   spacing: 0,
                   modifiers: [frame({ width: timeWidth, height: railHeight, alignment: 'topLeading' })],
-                  children: [
-                    _jsx(Text, {
-                      modifiers: [font({ size: timeSize, weight: 'regular' }), foregroundStyle('#666666')],
-                      children: first.time || ''
-                    }),
-                    _jsx(Spacer, {}),
-                    _jsx(Text, {
-                      modifiers: [font({ size: timeSize, weight: 'regular' }), foregroundStyle('#666666')],
-                      children: bottomTime
-                    })
-                  ]
+                  children: timeChildren
                 }),
                 _jsxs(VStack, {
                   alignment: 'center',
                   spacing: 0,
-                  modifiers: [frame({ width: 12, height: railHeight, alignment: 'center' })],
-                  children: [
-                    _jsx(Circle, { modifiers: [foregroundStyle('#D4D4D0'), frame({ width: 7, height: 7 })] }),
-                    _jsx(Rectangle, { modifiers: [foregroundStyle('#E1E1DE'), frame({ width: 1, height: Math.max(20, railHeight - 14) })] }),
-                    _jsx(Circle, { modifiers: [foregroundStyle('#D4D4D0'), frame({ width: 7, height: 7 })] })
-                  ]
+                  modifiers: [frame({ width: 12, height: railHeight, alignment: 'top' })],
+                  children: markerChildren
                 })
               ]
             }),
@@ -460,7 +481,7 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
       alignment: 'top',
       spacing: 12,
       modifiers: [
-        padding({ top: 12, bottom: 12, leading: 12, trailing: 8 }),
+        padding({ top: 12, bottom: 12, leading: 18, trailing: 12 }),
         containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
       ],
       children: [
