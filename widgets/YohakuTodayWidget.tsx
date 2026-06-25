@@ -36,6 +36,7 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
   var isSmall = environment && environment.widgetFamily === 'systemSmall';
   var isMedium = environment && environment.widgetFamily === 'systemMedium';
   var isLarge = environment && environment.widgetFamily === 'systemLarge';
+  var largeContentWidth = 316;
 
   function eventEndLabel(event) {
     return event && event.end ? '~' + event.end : '';
@@ -112,7 +113,7 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
 
   function renderCalendar(size) {
     var config = size === 'large'
-      ? { width: 316, height: 196, cell: 25, title: 17, weekday: 11, day: 14, rowSpacing4: 8, rowSpacing5: 4, rowSpacing6: 2, columnSpacing: 23 }
+      ? { width: largeContentWidth, height: 196, cell: 25, title: 17, weekday: 11, day: 14, rowSpacing4: 8, rowSpacing5: 4, rowSpacing6: 2, columnSpacing: 23.5 }
       : size === 'small'
         ? { width: 136, height: 132, cell: 18, title: 15, weekday: 9, day: 11, rowSpacing4: 6, rowSpacing5: 3, rowSpacing6: 1, columnSpacing: 1 }
         : { width: 160, height: 124, outerHeight: 136, cell: 19, title: 14, weekday: 9, day: 12, rowSpacing4: 7, rowSpacing5: 1, rowSpacing6: 0, columnSpacing: 3 };
@@ -291,11 +292,12 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
     var tightCards = compact || !fillContainer;
     var railWidth = compact ? 72 : 72;
     var timeWidth = compact ? 40 : 42;
-    var halfCardWidth = compact ? 92 : 112;
-    var fullCardWidth = compact ? 192 : 232;
+    var cardGap = compact ? 8 : 8;
+    var fullCardWidth = compact ? largeContentWidth - railWidth - 12 : 232;
+    var halfCardWidth = compact ? (fullCardWidth - cardGap) / 2 : 112;
     var topCardHeight = compact ? 38 : 45;
     var bottomCardHeight = compact ? 36 : 45;
-    var cardGap = compact ? 8 : 8;
+    var timelineContentWidth = railWidth + 12 + fullCardWidth;
     var hasSecondTimelineRow = rows.length > 2;
     var railHeight = hasSecondTimelineRow ? topCardHeight + cardGap + bottomCardHeight : topCardHeight;
     var timelineHeight = compact ? 107 : 124;
@@ -313,7 +315,7 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
           }),
           containerRelativeFrame({ axes: 'both', alignment: compact ? 'center' : 'centerLeading' })
         ]
-      : [frame({ width: railWidth + 12 + fullCardWidth, height: timelineHeight, alignment: 'topLeading' })];
+      : [frame({ width: timelineContentWidth, height: timelineHeight, alignment: 'topLeading' })];
 
     if (rows.length === 0) {
       return _jsxs(VStack, {
@@ -448,29 +450,27 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
   }
 
   if (widgetVariant === 'timeline') {
-    return renderTimeline(true, true);
+    return _jsx(VStack, {
+      alignment: 'center',
+      spacing: 0,
+      modifiers: [
+        containerRelativeFrame({ axes: 'both', alignment: 'center' })
+      ],
+      children: renderTimeline(true, false)
+    });
   }
 
   if (isLarge) {
     return _jsxs(VStack, {
-      alignment: 'leading',
+      alignment: 'center',
       spacing: 8,
       modifiers: [
         padding({ top: 14, bottom: 14, leading: 18, trailing: 18 }),
-        containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
+        containerRelativeFrame({ axes: 'both', alignment: 'top' })
       ],
       children: [
-        _jsxs(HStack, {
-          alignment: 'center',
-          spacing: 0,
-          modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'center' })],
-          children: [
-            _jsx(Spacer, {}),
-            renderCalendar('large'),
-            _jsx(Spacer, {})
-          ]
-        }),
-        _jsx(Divider, {}),
+        renderCalendar('large'),
+        _jsx(Divider, { modifiers: [frame({ width: largeContentWidth })] }),
         renderTimeline(false, false)
       ]
     });
