@@ -295,15 +295,15 @@ const createYohakuWidgetLayout = (variant: 'today' | 'calendar' | 'timeline') =>
     var cardGap = compact ? 8 : 8;
     var fullCardWidth = compact ? largeContentWidth - railWidth - 12 : 232;
     var halfCardWidth = compact ? (fullCardWidth - cardGap) / 2 : 112;
-    var topCardHeight = compact ? 38 : 45;
-    var bottomCardHeight = compact ? 36 : 45;
+    var topCardHeight = compact ? 44 : 45;
+    var bottomCardHeight = compact ? 44 : 58;
     var timelineContentWidth = railWidth + 12 + fullCardWidth;
     var hasSecondTimelineRow = rows.length > 2;
     var railHeight = hasSecondTimelineRow ? topCardHeight + cardGap + bottomCardHeight : topCardHeight;
-    var timelineHeight = compact ? 107 : 124;
+    var timelineHeight = compact ? 130 : 146;
     var titleSize = compact ? 12 : 13;
     var endSize = compact ? 10 : 11;
-    var dateSize = compact ? 17 : 18;
+    var dateSize = compact ? 17 : 17;
     var timeSize = compact ? 12 : 12;
     var outerModifiers = fillContainer
       ? [
