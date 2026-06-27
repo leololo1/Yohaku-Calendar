@@ -810,9 +810,6 @@ const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
       YohakuCalendarWidget: YohakuWidgetApi;
       YohakuTimelineWidget: YohakuWidgetApi;
       YohakuLockTasksWidget: YohakuWidgetApi;
-      YohakuLockCalendarTasksWidget: YohakuWidgetApi;
-      YohakuLockTimelineWidget: YohakuWidgetApi;
-      YohakuLockCombinedWidget: YohakuWidgetApi;
       YohakuLockCalendarWidget: YohakuWidgetApi;
     };
     const snapshot = buildYohakuTodayWidgetProps(events);
@@ -825,9 +822,6 @@ const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
       YohakuWidgets.YohakuCalendarWidget,
       YohakuWidgets.YohakuTimelineWidget,
       YohakuWidgets.YohakuLockTasksWidget,
-      YohakuWidgets.YohakuLockCalendarTasksWidget,
-      YohakuWidgets.YohakuLockTimelineWidget,
-      YohakuWidgets.YohakuLockCombinedWidget,
       YohakuWidgets.YohakuLockCalendarWidget,
     ].forEach((widget) => {
       widget.updateSnapshot(snapshot);

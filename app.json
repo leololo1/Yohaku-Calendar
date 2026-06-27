@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "17",
+      "buildNumber": "18",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -98,31 +98,8 @@
             {
               "name": "YohakuLockTasksWidget",
               "displayName": "今日の予定",
-              "description": "今日の予定をロック画面に表示します。",
-              "supportedFamilies": [
-                "accessoryRectangular"
-              ]
-            },
-            {
-              "name": "YohakuLockCalendarTasksWidget",
-              "displayName": "今日の予定",
-              "description": "日付と今日の予定をロック画面に表示します。",
-              "supportedFamilies": [
-                "accessoryRectangular"
-              ]
-            },
-            {
-              "name": "YohakuLockTimelineWidget",
-              "displayName": "今日の予定",
-              "description": "今日の予定をタイムライン形式でロック画面に表示します。",
-              "supportedFamilies": [
-                "accessoryRectangular"
-              ]
-            },
-            {
-              "name": "YohakuLockCombinedWidget",
-              "displayName": "今日の予定",
-              "description": "日付と今日の予定をロック画面に表示します。",
+              "description": "今日の予定を最大3件ロック画面に表示します。",
+              "contentMarginsDisabled": true,
               "supportedFamilies": [
                 "accessoryRectangular"
               ]
@@ -130,9 +107,10 @@
             {
               "name": "YohakuLockCalendarWidget",
               "displayName": "カレンダー",
-              "description": "今日の日付をロック画面に表示します。",
+              "description": "カレンダーをロック画面に表示します。",
+              "contentMarginsDisabled": true,
               "supportedFamilies": [
-                "accessoryCircular"
+                "accessoryRectangular"
               ]
             }
           ]

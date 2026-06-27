@@ -38,9 +38,6 @@ const createYohakuWidgetLayout = (
     | 'calendar'
     | 'timeline'
     | 'lockTasks'
-    | 'lockCalendarTasks'
-    | 'lockTimeline'
-    | 'lockCombined'
     | 'lockCalendar'
 ) => `function(props, environment) {
   var widgetVariant = '${variant}';
@@ -568,149 +565,115 @@ const createYohakuWidgetLayout = (
   function renderLockTasks() {
     return _jsx(VStack, {
       alignment: 'leading',
-      spacing: 2,
+      spacing: 1,
       modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })],
-      children: [
-        _jsx(Text, {
-          modifiers: [
-            font({ size: 10, weight: 'medium' }),
-            foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
-            lineLimit(1)
-          ],
-          children: dateLabel
-        })
-      ].concat(lockTaskRows(2, false))
-    });
-  }
-
-  function renderLockCalendarTasks() {
-    return _jsxs(HStack, {
-      alignment: 'center',
-      spacing: 8,
-      modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })],
-      children: [
-        _jsxs(VStack, {
-          alignment: 'leading',
-          spacing: 0,
-          modifiers: [frame({ width: 43, alignment: 'leading' })],
-          children: [
-            _jsx(Text, {
-              modifiers: [
-                font({ size: 9, weight: 'medium' }),
-                foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
-                lineLimit(1)
-              ],
-              children: monthLabel
-            }),
-            _jsx(Text, {
-              modifiers: [font({ size: 17, weight: 'semibold' }), foregroundStyle('primary'), lineLimit(1)],
-              children: dateLabel
-            })
-          ]
-        }),
-        _jsx(VStack, {
-          alignment: 'leading',
-          spacing: 2,
-          modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })],
-          children: lockTaskRows(2, false)
-        })
-      ]
-    });
-  }
-
-  function renderLockTimeline() {
-    var rows = timelineEvents.slice(0, 2);
-    if (rows.length === 0) {
-      return _jsx(VStack, {
-        alignment: 'leading',
-        spacing: 2,
-        modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })],
-        children: lockTaskRows(2, false)
-      });
-    }
-
-    return _jsx(VStack, {
-      alignment: 'leading',
-      spacing: 3,
-      modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })],
-      children: rows.map(function(event) {
-        return _jsxs(HStack, {
-          alignment: 'center',
-          spacing: 5,
-          modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })],
-          children: [
-            _jsx(Circle, { modifiers: [foregroundStyle('primary'), frame({ width: 5, height: 5 })] }),
-            _jsx(Text, {
-              modifiers: [
-                font({ size: 10, weight: 'medium' }),
-                foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
-                frame({ width: 34, alignment: 'leading' }),
-                lineLimit(1)
-              ],
-              children: event.time || ''
-            }),
-            _jsx(Text, {
-              modifiers: [font({ size: 12, weight: 'semibold' }), foregroundStyle('primary'), lineLimit(1)],
-              children: event.title || ''
-            }),
-            _jsx(Spacer, {})
-          ]
-        });
-      })
-    });
-  }
-
-  function renderLockCombined() {
-    return _jsx(VStack, {
-      alignment: 'leading',
-      spacing: 2,
-      modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })],
-      children: [
-        _jsxs(HStack, {
-          alignment: 'center',
-          spacing: 5,
-          modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })],
-          children: [
-            _jsx(Text, {
-              modifiers: [font({ size: 10, weight: 'semibold' }), foregroundStyle('primary'), lineLimit(1)],
-              children: dateLabel
-            }),
-            _jsx(Text, {
-              modifiers: [
-                font({ size: 9, weight: 'regular' }),
-                foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
-                lineLimit(1)
-              ],
-              children: String(timelineEvents.length) + '\u4EF6'
-            }),
-            _jsx(Spacer, {})
-          ]
-        })
-      ].concat(lockTaskRows(2, true))
+      children: lockTaskRows(3, false)
     });
   }
 
   function renderLockCalendar() {
-    var dateParts = String(dateLabel).split('.');
-    var month = dateParts.length > 1 ? dateParts[0] : '';
-    var day = dateParts.length > 1 ? dateParts[1] : dateLabel;
+    var weekdayLabels = ['\u65E5', '\u6708', '\u706B', '\u6C34', '\u6728', '\u91D1', '\u571F'];
+    var weekStarts = [];
+    var weekStart;
+    var offset;
+    var calendarRows = [];
 
-    return _jsxs(VStack, {
-      alignment: 'center',
+    for (weekStart = 0; weekStart < 42; weekStart += 7) {
+      var hasCurrentMonthDay = false;
+      for (offset = 0; offset < 7; offset += 1) {
+        var candidate = calendarDays[weekStart + offset] || {};
+        if (candidate.label && !candidate.muted) {
+          hasCurrentMonthDay = true;
+        }
+      }
+      if (hasCurrentMonthDay) {
+        weekStarts.push(weekStart);
+      }
+    }
+
+    if (weekStarts.length === 0) {
+      weekStarts = [0, 7, 14, 21, 28];
+    }
+
+    calendarRows.push(
+      _jsx(HStack, {
+        spacing: 4,
+        modifiers: [frame({ width: 150, height: 8, alignment: 'leading' })],
+        children: weekdayLabels.map(function(label) {
+          return _jsx(Text, {
+            modifiers: [
+              font({ size: 6, weight: 'medium' }),
+              foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
+              frame({ width: 18, height: 8, alignment: 'center' }),
+              lineLimit(1)
+            ],
+            children: label
+          });
+        })
+      })
+    );
+
+    weekStarts.forEach(function(start) {
+      calendarRows.push(
+        _jsx(HStack, {
+          spacing: 4,
+          modifiers: [frame({ width: 150, height: 8, alignment: 'leading' })],
+          children: [0, 1, 2, 3, 4, 5, 6].map(function(dayOffset) {
+            var day = calendarDays[start + dayOffset] || {};
+            var hidden = !day.label || day.muted;
+            var dayChildren = [];
+
+            if (!hidden && day.selected) {
+              dayChildren.push(
+                _jsx(Circle, {
+                  modifiers: [
+                    foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
+                    frame({ width: 8, height: 8 })
+                  ]
+                })
+              );
+            }
+
+            dayChildren.push(
+              _jsx(Text, {
+                modifiers: [
+                  font({ size: 7, weight: 'medium' }),
+                  foregroundStyle(hidden ? '#FFFFFF' : dateColorForEventCount(day.eventCount || 0)),
+                  frame({ width: 18, height: 8, alignment: 'center' }),
+                  lineLimit(1)
+                ],
+                children: hidden ? '' : day.label
+              })
+            );
+
+            return _jsxs(ZStack, {
+              modifiers: [frame({ width: 18, height: 8, alignment: 'center' })],
+              children: dayChildren
+            });
+          })
+        })
+      );
+    });
+
+    return _jsx(VStack, {
+      alignment: 'leading',
       spacing: 0,
       modifiers: [containerRelativeFrame({ axes: 'both', alignment: 'center' })],
       children: [
         _jsx(Text, {
           modifiers: [
-            font({ size: 9, weight: 'medium' }),
-            foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
+            font({ size: 9, weight: 'semibold' }),
+            foregroundStyle('primary'),
+            frame({ width: 150, height: 10, alignment: 'leading' }),
             lineLimit(1)
           ],
-          children: month
+          children: monthLabel
         }),
-        _jsx(Text, {
-          modifiers: [font({ size: 23, weight: 'semibold' }), foregroundStyle('primary'), lineLimit(1)],
-          children: day
+        _jsx(VStack, {
+          alignment: 'leading',
+          spacing: 0,
+          modifiers: [frame({ width: 150, alignment: 'leading' })],
+          children: calendarRows
         })
       ]
     });
@@ -935,18 +898,6 @@ const createYohakuWidgetLayout = (
     return renderLockTasks();
   }
 
-  if (widgetVariant === 'lockCalendarTasks') {
-    return renderLockCalendarTasks();
-  }
-
-  if (widgetVariant === 'lockTimeline') {
-    return renderLockTimeline();
-  }
-
-  if (widgetVariant === 'lockCombined') {
-    return renderLockCombined();
-  }
-
   if (widgetVariant === 'lockCalendar') {
     return renderLockCalendar();
   }
@@ -1012,9 +963,6 @@ const yohakuTodayWidgetLayout = createYohakuWidgetLayout('today');
 const yohakuCalendarWidgetLayout = createYohakuWidgetLayout('calendar');
 const yohakuTimelineWidgetLayout = createYohakuWidgetLayout('timeline');
 const yohakuLockTasksWidgetLayout = createYohakuWidgetLayout('lockTasks');
-const yohakuLockCalendarTasksWidgetLayout = createYohakuWidgetLayout('lockCalendarTasks');
-const yohakuLockTimelineWidgetLayout = createYohakuWidgetLayout('lockTimeline');
-const yohakuLockCombinedWidgetLayout = createYohakuWidgetLayout('lockCombined');
 const yohakuLockCalendarWidgetLayout = createYohakuWidgetLayout('lockCalendar');
 
 const Widget = createWidget<YohakuTodayWidgetProps>(
@@ -1047,21 +995,6 @@ export const YohakuLockTasksWidget = createWidget<YohakuTodayWidgetProps>(
   yohakuLockTasksWidgetLayout as unknown as YohakuTodayWidgetRenderer
 );
 
-export const YohakuLockCalendarTasksWidget = createWidget<YohakuTodayWidgetProps>(
-  'YohakuLockCalendarTasksWidget',
-  yohakuLockCalendarTasksWidgetLayout as unknown as YohakuTodayWidgetRenderer
-);
-
-export const YohakuLockTimelineWidget = createWidget<YohakuTodayWidgetProps>(
-  'YohakuLockTimelineWidget',
-  yohakuLockTimelineWidgetLayout as unknown as YohakuTodayWidgetRenderer
-);
-
-export const YohakuLockCombinedWidget = createWidget<YohakuTodayWidgetProps>(
-  'YohakuLockCombinedWidget',
-  yohakuLockCombinedWidgetLayout as unknown as YohakuTodayWidgetRenderer
-);
-
 export const YohakuLockCalendarWidget = createWidget<YohakuTodayWidgetProps>(
   'YohakuLockCalendarWidget',
   yohakuLockCalendarWidgetLayout as unknown as YohakuTodayWidgetRenderer
@@ -1083,9 +1016,6 @@ const initialWidgetProps: YohakuTodayWidgetProps = {
   YohakuCalendarWidget,
   YohakuTimelineWidget,
   YohakuLockTasksWidget,
-  YohakuLockCalendarTasksWidget,
-  YohakuLockTimelineWidget,
-  YohakuLockCombinedWidget,
   YohakuLockCalendarWidget,
 ].forEach((widget) => widget.updateSnapshot(initialWidgetProps));
 
