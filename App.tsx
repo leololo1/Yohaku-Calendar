@@ -90,6 +90,7 @@ type ScheduleTimelineEntry = {
   start: number;
   end: number;
   column: number;
+  columnSpan: number;
 };
 
 type ScheduleTimelineGroup = {
@@ -302,6 +303,25 @@ const formatScheduleEndLabel = (event: CalendarEvent) => {
   return endDate === event.date ? `~${event.end}` : `~${formatShortDateTitle(endDate)}\n${event.end}`;
 };
 
+const scheduleEntriesOverlap = (first: ScheduleTimelineEntry, second: ScheduleTimelineEntry) =>
+  first.start < second.end && second.start < first.end;
+
+const expandScheduleEntryColumns = (entries: ScheduleTimelineEntry[], columnCount: number) =>
+  entries.map((entry) => {
+    let columnSpan = 1;
+
+    for (let column = entry.column + 1; column < columnCount; column += 1) {
+      const columnIsOccupied = entries.some(
+        (candidate) => candidate.column === column && scheduleEntriesOverlap(entry, candidate),
+      );
+
+      if (columnIsOccupied) break;
+      columnSpan += 1;
+    }
+
+    return { ...entry, columnSpan };
+  });
+
 const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): ScheduleTimelineGroup[] => {
   const sortedEvents = sortEventsForDate(events, dateKey);
   const groups: ScheduleTimelineGroup[] = [];
@@ -324,14 +344,14 @@ const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): 
           start: entry.start,
           end: entry.end,
           columnCount: 1,
-          entries: [{ event: entry.event, start: entry.start, end: entry.end, column: 0 }],
+          entries: [{ event: entry.event, start: entry.start, end: entry.end, column: 0, columnSpan: 1 }],
         });
         return;
       }
 
       lastGroup.end = Math.max(lastGroup.end, entry.end);
       lastGroup.id = `${lastGroup.id}-${entry.event.id}`;
-      lastGroup.entries.push({ event: entry.event, start: entry.start, end: entry.end, column: 0 });
+      lastGroup.entries.push({ event: entry.event, start: entry.start, end: entry.end, column: 0, columnSpan: 1 });
     });
 
     const normalizedSingleDayGroups = singleDayGroups.map((group) => {
@@ -359,6 +379,7 @@ const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): 
     return normalizedSingleDayGroups.map((group) => ({
       ...group,
       columnCount: maxColumnCount,
+      entries: expandScheduleEntryColumns(group.entries, maxColumnCount),
     }));
   }
 
@@ -373,14 +394,14 @@ const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): 
         start,
         end,
         columnCount: 1,
-        entries: [{ event, start, end, column: 0 }],
+        entries: [{ event, start, end, column: 0, columnSpan: 1 }],
       });
       return;
     }
 
     lastGroup.end = Math.max(lastGroup.end, end);
     lastGroup.id = `${lastGroup.id}-${event.id}`;
-    lastGroup.entries.push({ event, start, end, column: 0 });
+    lastGroup.entries.push({ event, start, end, column: 0, columnSpan: 1 });
   });
 
   return groups.map((group) => {
@@ -399,7 +420,7 @@ const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): 
     return {
       ...group,
       columnCount: Math.max(1, columnEnds.length),
-      entries,
+      entries: expandScheduleEntryColumns(entries, Math.max(1, columnEnds.length)),
     };
   });
 };
@@ -440,6 +461,13 @@ const eventStartDateTime = (event: CalendarEvent) => {
   const date = parseDateKey(event.date);
   const start = minutesFromTime(event.start);
   date.setHours(Math.floor(start / 60), start % 60, 0, 0);
+  return date;
+};
+
+const eventEndDateTime = (event: CalendarEvent) => {
+  const date = parseDateKey(eventEndDate(event));
+  const end = minutesFromTime(event.end);
+  date.setHours(Math.floor(end / 60), end % 60, 0, 0);
   return date;
 };
 
@@ -712,8 +740,18 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
     dateKey,
   );
   const calendarDays = createMonthDays(visibleMonth, dateKey, events);
+  const toWidgetEvent = (event: CalendarEvent) => ({
+    id: event.id,
+    title: event.title,
+    date: event.date,
+    endDate: eventEndDate(event),
+    time: event.start,
+    end: event.end,
+  });
+  const widgetEvents = dayEvents.map(toWidgetEvent);
 
   return {
+    dateKey,
     dateLabel: formatWidgetDateTitle(dateKey),
     monthLabel: formatWidgetMonthTitle(date),
     calendarDays: calendarDays.map((day) => ({
@@ -724,26 +762,39 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
       eventCount: day.eventCount,
     })),
     totalCount: dayEvents.length,
-    events: dayEvents.slice(0, 6).map((event) => ({
-      title: event.title,
-      time: event.start,
-      end: event.end,
-    })),
+    events: widgetEvents,
+    timelineEvents: dayEvents
+      .filter((event) => eventEndDateTime(event).getTime() >= date.getTime())
+      .map(toWidgetEvent),
   };
 };
 
 const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const timelineEnd = addDays(todayStart, 8);
+  const entryTimes = [now.getTime()];
 
-  return Array.from({ length: 8 }, (_, index) => {
-    const entryDate = index === 0 ? now : addDays(todayStart, index);
+  for (let index = 1; index < 8; index += 1) {
+    entryTimes.push(addDays(todayStart, index).getTime());
+  }
 
-    return {
-      date: entryDate,
-      props: buildYohakuTodayWidgetProps(events, entryDate),
-    };
+  events.forEach((event) => {
+    const hideAt = eventEndDateTime(event).getTime() + 1000;
+    if (hideAt > now.getTime() && hideAt < timelineEnd.getTime()) {
+      entryTimes.push(hideAt);
+    }
   });
+
+  return Array.from(new Set(entryTimes))
+    .sort((first, second) => first - second)
+    .map((timestamp) => {
+      const entryDate = new Date(timestamp);
+      return {
+        date: entryDate,
+        props: buildYohakuTodayWidgetProps(events, entryDate),
+      };
+    });
 };
 
 const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
@@ -754,16 +805,30 @@ const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
     };
     const YohakuWidgets = require('./widgets/YohakuTodayWidget') as {
       default: YohakuWidgetApi;
+      YohakuMediumWidget: YohakuWidgetApi;
+      YohakuLargeWidget: YohakuWidgetApi;
       YohakuCalendarWidget: YohakuWidgetApi;
       YohakuTimelineWidget: YohakuWidgetApi;
+      YohakuLockTasksWidget: YohakuWidgetApi;
+      YohakuLockCalendarTasksWidget: YohakuWidgetApi;
+      YohakuLockTimelineWidget: YohakuWidgetApi;
+      YohakuLockCombinedWidget: YohakuWidgetApi;
+      YohakuLockCalendarWidget: YohakuWidgetApi;
     };
     const snapshot = buildYohakuTodayWidgetProps(events);
     const timeline = buildYohakuTodayWidgetTimeline(events);
 
     [
       YohakuWidgets.default,
+      YohakuWidgets.YohakuMediumWidget,
+      YohakuWidgets.YohakuLargeWidget,
       YohakuWidgets.YohakuCalendarWidget,
       YohakuWidgets.YohakuTimelineWidget,
+      YohakuWidgets.YohakuLockTasksWidget,
+      YohakuWidgets.YohakuLockCalendarTasksWidget,
+      YohakuWidgets.YohakuLockTimelineWidget,
+      YohakuWidgets.YohakuLockCombinedWidget,
+      YohakuWidgets.YohakuLockCalendarWidget,
     ].forEach((widget) => {
       widget.updateSnapshot(snapshot);
       widget.updateTimeline(timeline);
@@ -2740,6 +2805,15 @@ const scheduleEntryTop = (entry: ScheduleTimelineEntry, group: ScheduleTimelineG
 const scheduleEntryHeight = (entry: ScheduleTimelineEntry) =>
   Math.max(scheduleMinCardHeight, (entry.end - entry.start) * schedulePixelsPerMinute);
 
+const scheduleEntryHasPreviousNeighbor = (entry: ScheduleTimelineEntry, group: ScheduleTimelineGroup) =>
+  group.entries.some((candidate) => {
+    if (candidate.end !== entry.start) return false;
+
+    const entryRight = entry.column + entry.columnSpan;
+    const candidateRight = candidate.column + candidate.columnSpan;
+    return candidate.column < entryRight && candidateRight > entry.column;
+  });
+
 function ScheduleTimelineGroupView({
   group,
   onSelectEvent,
@@ -2748,20 +2822,28 @@ function ScheduleTimelineGroupView({
   onSelectEvent: (event: CalendarEvent) => void;
 }) {
   const groupHeight = scheduleGroupHeight(group);
+  const markerStarts = Array.from(new Set(group.entries.map((entry) => entry.start))).sort((first, second) => first - second);
 
   return (
     <View style={[styles.scheduleTimelineGroup, { minHeight: groupHeight }]}>
       <View style={[styles.scheduleTimelineTimes, { height: groupHeight }]}>
-        <Text style={styles.scheduleStart}>{formatTimelineTime(group.start)}</Text>
+        {markerStarts.map((start) => (
+          <Text key={start} style={[styles.scheduleStart, styles.scheduleTimelineTimeLabel, { top: Math.max(0, (start - group.start) * schedulePixelsPerMinute) }]}>
+            {formatTimelineTime(start)}
+          </Text>
+        ))}
       </View>
       <View style={[styles.scheduleTimelineMarker, { height: groupHeight }]}>
-        <View style={styles.scheduleDot} />
         <View style={styles.scheduleLine} />
+        {markerStarts.map((start) => (
+          <View key={start} style={[styles.scheduleDot, { top: Math.max(0, (start - group.start) * schedulePixelsPerMinute) + 4 }]} />
+        ))}
       </View>
       <View style={[styles.scheduleTimelineCards, { height: groupHeight }]}>
         {group.entries.map((entry) => {
-          const top = scheduleEntryTop(entry, group);
-          const height = scheduleEntryHeight(entry);
+          const previousNeighborInset = scheduleEntryHasPreviousNeighbor(entry, group) ? scheduleTimelineGroupGap : 0;
+          const top = scheduleEntryTop(entry, group) + previousNeighborInset;
+          const height = Math.max(1, scheduleEntryHeight(entry) - previousNeighborInset);
           const compactCard = group.columnCount >= 3 || height < 74;
 
           return (
@@ -2774,7 +2856,7 @@ function ScheduleTimelineGroupView({
                   top,
                   height,
                   left: `${(entry.column / group.columnCount) * 100}%`,
-                  width: `${100 / group.columnCount}%`,
+                  width: `${(entry.columnSpan / group.columnCount) * 100}%`,
                 },
               ]}
             >
@@ -3282,9 +3364,13 @@ const styles = StyleSheet.create({
   },
   scheduleTimelineTimes: {
     width: 58,
-    justifyContent: 'flex-start',
+    position: 'relative',
     paddingTop: 0,
     paddingBottom: 0,
+  },
+  scheduleTimelineTimeLabel: {
+    position: 'absolute',
+    left: 0,
   },
   scheduleStart: {
     color: tokens.secondaryText,
@@ -3302,20 +3388,23 @@ const styles = StyleSheet.create({
   },
   scheduleTimelineMarker: {
     width: 40,
-    alignItems: 'center',
+    position: 'relative',
   },
   scheduleDot: {
+    position: 'absolute',
+    left: 16,
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: '#D8D8D4',
-    marginTop: 4,
   },
   scheduleLine: {
+    position: 'absolute',
+    top: 22,
+    bottom: 0,
+    left: 19.5,
     width: 1,
-    flex: 1,
     backgroundColor: tokens.hairline,
-    marginTop: 10,
   },
   scheduleTimelineCards: {
     flex: 1,
