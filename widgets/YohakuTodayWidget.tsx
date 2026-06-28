@@ -961,16 +961,14 @@ const createYohakuWidgetLayout = (
       alignment: 'leading',
       spacing: 0,
       modifiers: [
+        padding({ top: 12, bottom: 12, leading: 18, trailing: 12 }),
         containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' }),
         background(themeBackground)
       ],
       children: _jsxs(HStack, {
         alignment: 'center',
         spacing: 12,
-        modifiers: [
-          padding({ top: 12, bottom: 12, leading: 18, trailing: 12 }),
-          containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' })
-        ],
+        modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'centerLeading' })],
         children: [
           renderCalendar('medium'),
           renderEventList(3, true, false),
