@@ -253,7 +253,7 @@ const createYohakuWidgetLayout = (
     });
   }
 
-  function renderEventList(maxRows, compact, fillBackground) {
+  function renderEventList(maxRows, compact) {
     var rows = events.slice(0, maxRows);
     var compactListHeight = 136;
     var compactHeaderHeight = 18;
@@ -331,10 +331,6 @@ const createYohakuWidgetLayout = (
           padding({ top: 18, bottom: 16, leading: 18, trailing: 18 }),
           containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
         ];
-
-    if (fillBackground) {
-      listModifiers.push(background(themeBackground));
-    }
 
     return _jsx(VStack, {
       alignment: 'leading',
@@ -907,6 +903,19 @@ const createYohakuWidgetLayout = (
     });
   }
 
+  function renderHomeWidgetShell(content, alignment, frameAlignment) {
+    return _jsx(VStack, {
+      alignment: alignment,
+      spacing: 0,
+      modifiers: [
+        containerRelativeFrame({ axes: 'both', alignment: frameAlignment }),
+        frame({ maxWidth: 10000, maxHeight: 10000, alignment: frameAlignment }),
+        background(themeBackground)
+      ],
+      children: content
+    });
+  }
+
   if (widgetVariant === 'lockTasks') {
     return renderLockTasks();
   }
@@ -916,69 +925,51 @@ const createYohakuWidgetLayout = (
   }
 
   if (widgetVariant === 'calendar') {
-    return _jsx(VStack, {
+    return renderHomeWidgetShell(_jsx(VStack, {
       alignment: 'center',
       spacing: 0,
       modifiers: [
-        padding({ top: 10, bottom: 10, leading: 8, trailing: 8 }),
-        containerRelativeFrame({ axes: 'both', alignment: 'center' }),
-        background(themeBackground)
+        padding({ top: 10, bottom: 10, leading: 8, trailing: 8 })
       ],
       children: renderCalendar('small')
-    });
+    }), 'center', 'center');
   }
 
   if (widgetVariant === 'timeline') {
-    return _jsx(VStack, {
-      alignment: 'center',
-      spacing: 0,
-      modifiers: [
-        containerRelativeFrame({ axes: 'both', alignment: 'center' }),
-        background(themeBackground)
-      ],
-      children: renderTimeline(true, false)
-    });
+    return renderHomeWidgetShell(renderTimeline(true, false), 'center', 'center');
   }
 
   if (isLarge) {
-    return _jsxs(VStack, {
+    return renderHomeWidgetShell(_jsxs(VStack, {
       alignment: 'center',
       spacing: 6,
       modifiers: [
-        padding({ top: 12, bottom: 12, leading: 18, trailing: 18 }),
-        containerRelativeFrame({ axes: 'both', alignment: 'top' }),
-        background(themeBackground)
+        padding({ top: 12, bottom: 12, leading: 18, trailing: 18 })
       ],
       children: [
         renderCalendar('large'),
         renderTimeline(false, false)
       ]
-    });
+    }), 'center', 'top');
   }
 
   if (isMedium) {
-    return _jsx(VStack, {
-      alignment: 'leading',
-      spacing: 0,
+    return renderHomeWidgetShell(_jsxs(HStack, {
+      alignment: 'center',
+      spacing: 12,
       modifiers: [
         padding({ top: 12, bottom: 12, leading: 18, trailing: 12 }),
-        containerRelativeFrame({ axes: 'both', alignment: 'centerLeading' }),
-        background(themeBackground)
+        containerRelativeFrame({ axes: 'horizontal', alignment: 'centerLeading' })
       ],
-      children: _jsxs(HStack, {
-        alignment: 'center',
-        spacing: 12,
-        modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'centerLeading' })],
-        children: [
-          renderCalendar('medium'),
-          renderEventList(3, true, false),
-          _jsx(Spacer, {})
-        ]
-      })
-    });
+      children: [
+        renderCalendar('medium'),
+        renderEventList(3, true),
+        _jsx(Spacer, {})
+      ]
+    }), 'leading', 'centerLeading');
   }
 
-  return renderEventList(3, false, true);
+  return renderHomeWidgetShell(renderEventList(3, false), 'leading', 'topLeading');
 }`;
 
 const yohakuTodayWidgetLayout = createYohakuWidgetLayout('today');
