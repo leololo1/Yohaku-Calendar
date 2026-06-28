@@ -1,6 +1,7 @@
 import 'expo-sqlite/localStorage/install';
 import * as Notifications from 'expo-notifications';
 import * as WebBrowser from 'expo-web-browser';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { StatusBar } from 'expo-status-bar';
 import { CloudStorage } from 'react-native-cloud-storage';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
@@ -28,7 +29,7 @@ import {
 } from 'react-native';
 
 type CalendarMode = 'month';
-type ViewMode = CalendarMode | 'form' | 'pro' | 'notificationSettings' | 'backup';
+type ViewMode = CalendarMode | 'form' | 'pro' | 'notificationSettings' | 'theme' | 'backup';
 type FormMode = 'add' | 'edit';
 type NotificationOption = 'none' | 'atStart' | 'before3' | 'before5' | 'before10' | 'before30' | 'before60';
 type TimeFieldKey = 'start' | 'end';
@@ -76,6 +77,15 @@ type EventDraft = {
 type NotificationSettings = {
   eventNotificationsEnabled: boolean;
   soundEnabled: boolean;
+};
+
+type ThemePalette = {
+  id: string;
+  name: string;
+  background: string;
+  surface: string;
+  border: string;
+  dot: string;
 };
 
 type BackupPayload = {
@@ -178,6 +188,7 @@ const notificationSettingsStorageKey = 'yohaku-calendar-notification-settings';
 const notificationPermissionPromptedStorageKey = 'yohaku-calendar-notification-permission-prompted';
 const backupAutoEnabledStorageKey = 'yohaku-calendar-backup-auto-enabled';
 const backupLastBackupAtStorageKey = 'yohaku-calendar-backup-last-at';
+const themeStorageKey = 'yohaku-calendar-theme';
 const iCloudBackupDirectory = '/yohaku-calendar';
 const iCloudBackupPath = `${iCloudBackupDirectory}/backup.json`;
 const notificationIdentifierPrefix = 'yohaku-calendar-event-';
@@ -186,6 +197,43 @@ const defaultNotificationSettings: NotificationSettings = {
   eventNotificationsEnabled: true,
   soundEnabled: true,
 };
+const themePalettes: ThemePalette[] = [
+  { id: 'pure-white', name: 'ピュアホワイト', background: '#FFFFFF', surface: '#F7F7F5', border: '#E8E8E5', dot: '#D7D7D3' },
+  { id: 'soft-white', name: 'ソフトホワイト', background: '#FCFCFA', surface: '#F5F5F2', border: '#E6E6E1', dot: '#D3D3CD' },
+  { id: 'paper-white', name: 'ペーパーホワイト', background: '#FAF8F3', surface: '#F2EFE8', border: '#E2DDD2', dot: '#CEC6B8' },
+  { id: 'milk', name: 'ミルク', background: '#FBF8F2', surface: '#F3EEE5', border: '#E5DED2', dot: '#D2C7B8' },
+  { id: 'ivory', name: 'アイボリー', background: '#FAF5EA', surface: '#F1E8D8', border: '#E1D5C0', dot: '#CDBB9F' },
+  { id: 'mist-gray', name: 'ミストグレー', background: '#F7F8F7', surface: '#EFF0EE', border: '#DEDFDB', dot: '#C9CBC6' },
+  { id: 'stone-gray', name: 'ストーングレー', background: '#F3F3F1', surface: '#EAEAE6', border: '#D8D8D2', dot: '#BFC0B8' },
+  { id: 'ash', name: 'アッシュ', background: '#F4F5F4', surface: '#ECEEED', border: '#D9DDDC', dot: '#AEB9BC' },
+  { id: 'snow', name: 'スノー', background: '#FBFCFD', surface: '#F2F5F7', border: '#E0E6EA', dot: '#C8D2D8' },
+  { id: 'pearl', name: 'パール', background: '#FAFAFC', surface: '#F1F1F5', border: '#E1E1E8', dot: '#CACAD6' },
+  { id: 'cloud', name: 'クラウド', background: '#F8FAFA', surface: '#EEF2F2', border: '#DDE4E4', dot: '#C5D0D0' },
+  { id: 'fog', name: 'フォグ', background: '#F6F7F6', surface: '#EDEFED', border: '#DADDD9', dot: '#C3C8C1' },
+  { id: 'cement', name: 'セメント', background: '#F1F1EF', surface: '#E7E7E3', border: '#D4D4CE', dot: '#B9B9AF' },
+  { id: 'chalk', name: 'チョーク', background: '#FDFCF8', surface: '#F6F3EC', border: '#E6E0D4', dot: '#D0C5B2' },
+  { id: 'oat', name: 'オート', background: '#F8F3EA', surface: '#EFE5D6', border: '#DED0BA', dot: '#C8B291' },
+  { id: 'linen', name: 'リネン', background: '#F7F1E6', surface: '#EEE3D0', border: '#DCCBB0', dot: '#C2A986' },
+  { id: 'sand', name: 'サンド', background: '#F5EDDF', surface: '#EADCC6', border: '#D6C0A0', dot: '#B99B73' },
+  { id: 'warm-gray', name: 'ウォームグレー', background: '#F4F2EE', surface: '#EAE6DE', border: '#D8D1C5', dot: '#BEB3A3' },
+  { id: 'taupe', name: 'トープ', background: '#F1EDE7', surface: '#E5DDD3', border: '#D0C4B6', dot: '#AFA091' },
+  { id: 'mocha-gray', name: 'モカグレー', background: '#EEEAE4', surface: '#DFD7CD', border: '#C8BAAA', dot: '#A39180' },
+  { id: 'silver', name: 'シルバー', background: '#F6F6F5', surface: '#EFEFEC', border: '#DCDCD7', dot: '#C4C4BD' },
+  { id: 'platinum', name: 'プラチナ', background: '#F7F7F8', surface: '#EFEFF1', border: '#DDDEE2', dot: '#C4C6CC' },
+  { id: 'light-slate', name: 'ライトスレート', background: '#F3F5F5', surface: '#EAEEEE', border: '#D6DDDD', dot: '#B8C2C2' },
+  { id: 'blue-gray', name: 'ブルーグレー', background: '#F2F6F7', surface: '#E8EFF1', border: '#D2DEE2', dot: '#ADC1C8' },
+  { id: 'moon', name: 'ムーン', background: '#F8F8FA', surface: '#F0F0F4', border: '#DEDFE7', dot: '#C5C7D3' },
+  { id: 'lavender-gray', name: 'ラベンダーグレー', background: '#F8F7FA', surface: '#F0EEF4', border: '#DFDCE8', dot: '#C9C2D6' },
+  { id: 'warm-snow', name: 'ウォームスノー', background: '#FEFCF8', surface: '#F7F2EA', border: '#E8DFD2', dot: '#D3C4B2' },
+  { id: 'cream', name: 'クリーム', background: '#FBF4E8', surface: '#F1E3CB', border: '#DFCBAA', dot: '#C6A77A' },
+  { id: 'vanilla', name: 'バニラ', background: '#FCF6EA', surface: '#F3E8D3', border: '#E3D2B3', dot: '#CAB08A' },
+  { id: 'greige', name: 'グレージュ', background: '#F2EEE8', surface: '#E6DED4', border: '#D1C4B6', dot: '#B4A394' },
+  { id: 'dry-gray', name: 'ドライグレー', background: '#F0F0ED', surface: '#E4E4DF', border: '#D0D0C8', dot: '#AFAFA5' },
+  { id: 'milky-gray', name: 'ミルキーグレー', background: '#F7F7F4', surface: '#EFEFE9', border: '#DDDDD4', dot: '#C6C6BB' },
+  { id: 'whisper', name: 'ウィスパー', background: '#FCFCFB', surface: '#F6F6F4', border: '#E9E9E5', dot: '#D8D8D1' },
+  { id: 'soft-white-jp', name: 'ほの白', background: '#FFFDF9', surface: '#F8F3EA', border: '#E8DED0', dot: '#D1C0AA' },
+];
+const defaultTheme = themePalettes[0];
 const notificationOffsets: Record<Exclude<NotificationOption, 'none'>, number> = {
   atStart: 0,
   before3: 3,
@@ -732,7 +780,11 @@ const createMonthDays = (visibleMonth: Date, selectedDate: string, events: Calen
   });
 };
 
-const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date()): YohakuTodayWidgetProps => {
+const buildYohakuTodayWidgetProps = (
+  events: CalendarEvent[],
+  date = new Date(),
+  theme: ThemePalette = defaultTheme,
+): YohakuTodayWidgetProps => {
   const dateKey = toDateKey(date);
   const visibleMonth = new Date(date.getFullYear(), date.getMonth(), 1);
   const dayEvents = sortEventsForDate(
@@ -754,6 +806,10 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
     dateKey,
     dateLabel: formatWidgetDateTitle(dateKey),
     monthLabel: formatWidgetMonthTitle(date),
+    themeBackground: theme.background,
+    themeSurface: theme.surface,
+    themeBorder: theme.border,
+    themeDot: theme.dot,
     calendarDays: calendarDays.map((day) => ({
       key: day.key,
       label: day.label,
@@ -769,7 +825,10 @@ const buildYohakuTodayWidgetProps = (events: CalendarEvent[], date = new Date())
   };
 };
 
-const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
+const buildYohakuTodayWidgetTimeline = (
+  events: CalendarEvent[],
+  theme: ThemePalette = defaultTheme,
+) => {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const timelineEnd = addDays(todayStart, 8);
@@ -792,12 +851,12 @@ const buildYohakuTodayWidgetTimeline = (events: CalendarEvent[]) => {
       const entryDate = new Date(timestamp);
       return {
         date: entryDate,
-        props: buildYohakuTodayWidgetProps(events, entryDate),
+        props: buildYohakuTodayWidgetProps(events, entryDate, theme),
       };
     });
 };
 
-const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
+const syncYohakuTodayWidget = (events: CalendarEvent[], theme: ThemePalette) => {
   try {
     type YohakuWidgetApi = {
       updateSnapshot: (props: YohakuTodayWidgetProps) => void;
@@ -812,8 +871,8 @@ const syncYohakuTodayWidget = (events: CalendarEvent[]) => {
       YohakuLockTasksWidget: YohakuWidgetApi;
       YohakuLockCalendarWidget: YohakuWidgetApi;
     };
-    const snapshot = buildYohakuTodayWidgetProps(events);
-    const timeline = buildYohakuTodayWidgetTimeline(events);
+    const snapshot = buildYohakuTodayWidgetProps(events, new Date(), theme);
+    const timeline = buildYohakuTodayWidgetTimeline(events, theme);
 
     [
       YohakuWidgets.default,
@@ -843,6 +902,7 @@ export default function App() {
   const [selectedEventId, setSelectedEventId] = useState(initialEvents[0].id);
   const [draft, setDraft] = useState<EventDraft>(emptyDraft(initialCalendarState.todayKey));
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(defaultNotificationSettings);
+  const [selectedThemeId, setSelectedThemeId] = useState(defaultTheme.id);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -860,12 +920,21 @@ export default function App() {
   const restoringBackupRef = useRef(false);
   const { width } = useWindowDimensions();
   const compact = width < 380;
+  const activeTheme = useMemo(
+    () => themePalettes.find((theme) => theme.id === selectedThemeId) ?? defaultTheme,
+    [selectedThemeId],
+  );
+  const activeTokens = useMemo(() => createAppTokens(activeTheme), [activeTheme]);
+  const activeStyles = useMemo(() => createStyles(activeTokens), [activeTokens]);
+  tokens = activeTokens;
+  styles = activeStyles;
 
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
     const savedNotificationSettings = localStorage.getItem(notificationSettingsStorageKey);
     const notificationPermissionPrompted = localStorage.getItem(notificationPermissionPromptedStorageKey);
     const savedLastBackupAt = localStorage.getItem(backupLastBackupAtStorageKey);
+    const savedThemeId = localStorage.getItem(themeStorageKey);
 
     if (savedEvents) {
       try {
@@ -892,6 +961,9 @@ export default function App() {
 
     setAutoBackupEnabled(false);
     setLastBackupAt(savedLastBackupAt || null);
+    if (savedThemeId && themePalettes.some((theme) => theme.id === savedThemeId)) {
+      setSelectedThemeId(savedThemeId);
+    }
     setStorageReady(true);
 
     if (!savedNotificationSettings && notificationPermissionPrompted !== 'true') {
@@ -917,8 +989,8 @@ export default function App() {
       return;
     }
 
-    syncYohakuTodayWidget(events);
-  }, [events, storageReady]);
+    syncYohakuTodayWidget(events, activeTheme);
+  }, [activeTheme, events, storageReady]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -927,6 +999,14 @@ export default function App() {
 
     localStorage.setItem(notificationSettingsStorageKey, JSON.stringify(notificationSettings));
   }, [notificationSettings, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(themeStorageKey, selectedThemeId);
+  }, [selectedThemeId, storageReady]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -987,6 +1067,10 @@ export default function App() {
 
     if (mode === 'notificationSettings') {
       return '通知設定';
+    }
+
+    if (mode === 'theme') {
+      return 'テーマカラー';
     }
 
     if (mode === 'backup') {
@@ -1069,7 +1153,7 @@ export default function App() {
       return;
     }
 
-    if (mode === 'pro' || mode === 'notificationSettings' || mode === 'backup') {
+    if (mode === 'pro' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup') {
       setMode('month');
       return;
     }
@@ -1444,6 +1528,7 @@ export default function App() {
 
           setEvents([]);
           setNotificationSettings(nextNotificationSettings);
+          setSelectedThemeId(defaultTheme.id);
           setAutoBackupEnabled(false);
           setLastBackupAt(null);
           setSelectedEventId('');
@@ -1469,7 +1554,7 @@ export default function App() {
       <View style={[styles.page, compact && styles.pageCompact]}>
         <Header
           title={headerTitle}
-          canGoBack={mode === 'form' || mode === 'pro' || mode === 'notificationSettings' || mode === 'backup'}
+          canGoBack={mode === 'form' || mode === 'pro' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup'}
           canPickMonth={mode === 'month'}
           showCalendarActions={mode === 'month'}
           showSaveAction={mode === 'form'}
@@ -1522,6 +1607,10 @@ export default function App() {
           />
         )}
 
+        {mode === 'theme' && (
+          <ThemeColorScreen selectedThemeId={selectedThemeId} onSelectTheme={setSelectedThemeId} />
+        )}
+
         {mode === 'backup' && (
           <BackupScreen
             autoBackupEnabled={autoBackupEnabled}
@@ -1564,6 +1653,10 @@ export default function App() {
           onOpenNotificationSettings={() => {
             setSettingsVisible(false);
             setMode('notificationSettings');
+          }}
+          onOpenTheme={() => {
+            setSettingsVisible(false);
+            setMode('theme');
           }}
           onOpenBackup={() => {
             setSettingsVisible(false);
@@ -1692,30 +1785,11 @@ function Header({
 }
 
 function TodayIcon() {
-  return (
-    <View style={styles.todayIcon}>
-      <View style={styles.todayIconRingLeft} />
-      <View style={styles.todayIconRingRight} />
-      <View style={styles.todayIconTopLine} />
-    </View>
-  );
+  return <MaterialIcons name="refresh" size={22} color={tokens.text} />;
 }
 
 function GearIcon() {
-  return (
-    <View style={styles.gearIcon}>
-      <View style={[styles.gearTooth, styles.gearToothTop]} />
-      <View style={[styles.gearTooth, styles.gearToothTopRight]} />
-      <View style={[styles.gearTooth, styles.gearToothRight]} />
-      <View style={[styles.gearTooth, styles.gearToothBottomRight]} />
-      <View style={[styles.gearTooth, styles.gearToothBottom]} />
-      <View style={[styles.gearTooth, styles.gearToothBottomLeft]} />
-      <View style={[styles.gearTooth, styles.gearToothLeft]} />
-      <View style={[styles.gearTooth, styles.gearToothTopLeft]} />
-      <View style={styles.gearOuterRing} />
-      <View style={styles.gearInnerRing} />
-    </View>
-  );
+  return <MaterialIcons name="menu" size={22} color={tokens.text} />;
 }
 
 function DownChevron() {
@@ -2064,10 +2138,12 @@ const settingsSections = [
   [
     {
       title: 'Proプラン',
-      subtitle: 'もっと自由に、カレンダーを使いこなす。',
     },
     {
       title: '通知設定',
+    },
+    {
+      title: 'テーマカラー',
     },
     {
       title: 'バックアップ',
@@ -2105,6 +2181,7 @@ function SettingsSheet({
   onDismiss,
   onOpenPro,
   onOpenNotificationSettings,
+  onOpenTheme,
   onOpenBackup,
   onShareApp,
   onOpenStoreReview,
@@ -2116,6 +2193,7 @@ function SettingsSheet({
   onDismiss: () => void;
   onOpenPro: () => void;
   onOpenNotificationSettings: () => void;
+  onOpenTheme: () => void;
   onOpenBackup: () => void;
   onShareApp: () => void;
   onOpenStoreReview: () => void;
@@ -2139,15 +2217,16 @@ function SettingsSheet({
                   <SettingsRow
                     key={item.title}
                     title={item.title}
-                    subtitle={item.subtitle}
                     onPress={
                       sectionIndex === 0 && itemIndex === 0
                         ? onOpenPro
                         : sectionIndex === 0 && itemIndex === 1
                           ? onOpenNotificationSettings
                           : sectionIndex === 0 && itemIndex === 2
-                            ? onOpenBackup
-                            : sectionIndex === 1 && itemIndex === 0
+                            ? onOpenTheme
+                            : sectionIndex === 0 && itemIndex === 3
+                              ? onOpenBackup
+                              : sectionIndex === 1 && itemIndex === 0
                               ? onShareApp
                             : sectionIndex === 1 && itemIndex === 1
                               ? onOpenStoreReview
@@ -2168,26 +2247,117 @@ function SettingsSheet({
   );
 }
 
-function SettingsRow({ title, subtitle, onPress }: { title: string; subtitle?: string; onPress?: () => void }) {
+function SettingsRow({ title, onPress }: { title: string; onPress?: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.settingsRow, pressed && styles.pressed]}>
       <View style={styles.settingsRowText}>
         <Text style={styles.settingsRowTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.settingsRowSubtitle}>{subtitle}</Text> : null}
       </View>
       <Text style={styles.settingsChevron}>›</Text>
     </Pressable>
   );
 }
 
+function ThemeColorScreen({
+  selectedThemeId,
+  onSelectTheme,
+}: {
+  selectedThemeId: string;
+  onSelectTheme: (themeId: string) => void;
+}) {
+  const previewDates = ['22', '23', '24', '25', '26', '27', '28'];
+
+  return (
+    <ScrollView style={styles.themeScreen} contentContainerStyle={styles.themeContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.themeIntro}>色合いを選択してください。</Text>
+      <View style={styles.themeGrid}>
+        {themePalettes.map((theme) => {
+          const selected = theme.id === selectedThemeId;
+
+          return (
+            <Pressable
+              key={theme.id}
+              onPress={() => onSelectTheme(theme.id)}
+              style={({ pressed }) => [
+                styles.themeOption,
+                { backgroundColor: theme.background, borderColor: selected ? '#777773' : theme.border },
+                pressed && styles.pressed,
+              ]}
+            >
+              {selected ? (
+                <View style={styles.themeSelectedBadge}>
+                  <Text style={styles.themeSelectedCheck}>✓</Text>
+                </View>
+              ) : null}
+
+              <View style={[styles.themePreview, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                <View style={styles.themePreviewHeader}>
+                  <MaterialIcons name="menu" size={11} color={tokens.text} />
+                  <Text style={styles.themePreviewMonth}>2026.6⌄</Text>
+                  <MaterialIcons name="refresh" size={11} color={tokens.text} />
+                </View>
+
+                <View style={styles.themePreviewWeekdays}>
+                  {weekdays.map((weekday) => (
+                    <Text key={weekday} style={styles.themePreviewWeekday}>{weekday}</Text>
+                  ))}
+                </View>
+
+                <View style={styles.themePreviewDates}>
+                  {previewDates.map((date) => (
+                    <View key={date} style={styles.themePreviewDateCell}>
+                      {date === '27' ? <View style={[styles.themePreviewSelectedDate, { backgroundColor: theme.dot }]} /> : null}
+                      <Text style={styles.themePreviewDate}>{date}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                <View style={styles.themePreviewTimeline}>
+                  <View style={styles.themePreviewTimelineRow}>
+                    <Text style={styles.themePreviewTime}>19:00</Text>
+                    <View style={styles.themePreviewRail}>
+                      <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
+                      <View style={[styles.themePreviewLine, { backgroundColor: theme.border }]} />
+                    </View>
+                    <View style={styles.themePreviewCardsRow}>
+                      <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
+                        <Text style={styles.themePreviewCardTitle}>テスト1</Text>
+                        <Text style={styles.themePreviewCardTime}>~20:00</Text>
+                      </View>
+                      <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
+                        <Text style={styles.themePreviewCardTitle}>テスト2</Text>
+                        <Text style={styles.themePreviewCardTime}>~20:00</Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.themePreviewTimelineRow}>
+                    <Text style={styles.themePreviewTime}>20:00</Text>
+                    <View style={styles.themePreviewRail}>
+                      <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
+                    </View>
+                    <View style={[styles.themePreviewCardWide, { backgroundColor: theme.surface }]}>
+                      <Text style={styles.themePreviewCardTitle}>テスト3</Text>
+                      <Text style={styles.themePreviewCardTime}>~21:00</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+
+              <Text style={styles.themeOptionName}>{theme.name}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
 const proFeatures = [
   {
     title: '広告なし',
-    description: 'すっきりとした体験を提供します。',
   },
   {
     title: 'iCloudの自動バックアップ',
-    description: '大切な予定を自動で安全に保存します。',
   },
 ];
 
@@ -2196,7 +2366,6 @@ function ProPlanScreen() {
     <ScrollView style={styles.proScreen} contentContainerStyle={styles.proContent} showsVerticalScrollIndicator={false}>
       <View style={styles.proHero}>
         <Text style={styles.proHeroTitle}>Yohaku Pro</Text>
-        <Text style={styles.proHeroSubtitle}>より静かに、より自由に。</Text>
       </View>
 
       <View style={styles.proFeatureList}>
@@ -2204,7 +2373,6 @@ function ProPlanScreen() {
           <Pressable key={feature.title} style={({ pressed }) => [styles.proFeatureRow, pressed && styles.pressed]}>
             <View style={styles.proFeatureText}>
               <Text style={styles.proFeatureTitle}>{feature.title}</Text>
-              <Text style={styles.proFeatureDescription}>{feature.description}</Text>
             </View>
             <Text style={styles.proChevron}>›</Text>
           </Pressable>
@@ -3052,29 +3220,34 @@ function FormField({
   );
 }
 
-const tokens = {
-  background: '#FAFAF8',
-  surface: '#FFFFFF',
-  subtleSurface: '#F7F7F5',
+const createAppTokens = (theme: ThemePalette) => ({
+  background: theme.background,
+  surface: theme.surface,
+  subtleSurface: theme.surface,
   text: '#222222',
   secondaryText: '#777777',
   tertiaryText: '#AAAAAA',
   disabledText: '#CFCFCB',
-  hairline: '#EEEEEA',
-  divider: '#E6E6E2',
-  selected: '#EFEFED',
-  dot: '#8E8E89',
+  hairline: theme.border,
+  divider: theme.border,
+  selected: theme.dot,
+  dot: theme.dot,
   destructive: '#9B6A62',
-};
+});
 
-const styles = StyleSheet.create({
+let tokens = createAppTokens(defaultTheme);
+
+const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
+  const tokens = themeTokens;
+
+  return StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: tokens.background,
   },
   page: {
     flex: 1,
-    backgroundColor: tokens.surface,
+    backgroundColor: tokens.background,
     paddingTop: 66,
   },
   pageCompact: {
@@ -3148,71 +3321,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  gearIcon: {
-    width: 22,
-    height: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  gearTooth: {
-    position: 'absolute',
-    width: 1.4,
-    height: 4.8,
-    borderRadius: 1,
-    backgroundColor: tokens.secondaryText,
-  },
-  gearToothTop: {
-    top: 1,
-  },
-  gearToothTopRight: {
-    top: 3.1,
-    right: 4.1,
-    transform: [{ rotate: '45deg' }],
-  },
-  gearToothRight: {
-    right: 1,
-    transform: [{ rotate: '90deg' }],
-  },
-  gearToothBottomRight: {
-    right: 4.1,
-    bottom: 3.1,
-    transform: [{ rotate: '-45deg' }],
-  },
-  gearToothBottom: {
-    bottom: 1,
-  },
-  gearToothBottomLeft: {
-    left: 4.1,
-    bottom: 3.1,
-    transform: [{ rotate: '45deg' }],
-  },
-  gearToothLeft: {
-    left: 1,
-    transform: [{ rotate: '90deg' }],
-  },
-  gearToothTopLeft: {
-    top: 3.1,
-    left: 4.1,
-    transform: [{ rotate: '-45deg' }],
-  },
-  gearOuterRing: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 1.4,
-    borderColor: tokens.secondaryText,
-    backgroundColor: tokens.surface,
-  },
-  gearInnerRing: {
-    position: 'absolute',
-    width: 4.8,
-    height: 4.8,
-    borderRadius: 2.4,
-    borderWidth: 1.2,
-    borderColor: tokens.secondaryText,
-    backgroundColor: tokens.surface,
-  },
   downChevronIcon: {
     width: 12,
     height: 24,
@@ -3238,37 +3346,6 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     backgroundColor: tokens.secondaryText,
     transform: [{ rotate: '-45deg' }],
-  },
-  todayIcon: {
-    width: 18,
-    height: 19,
-    borderWidth: 1,
-    borderColor: tokens.secondaryText,
-    borderRadius: 4,
-  },
-  todayIconRingLeft: {
-    position: 'absolute',
-    top: -3,
-    left: 4,
-    width: 1,
-    height: 5,
-    backgroundColor: tokens.secondaryText,
-  },
-  todayIconRingRight: {
-    position: 'absolute',
-    top: -3,
-    right: 4,
-    width: 1,
-    height: 5,
-    backgroundColor: tokens.secondaryText,
-  },
-  todayIconTopLine: {
-    position: 'absolute',
-    top: 5,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: tokens.secondaryText,
   },
   monthScreen: {
     flex: 1,
@@ -3390,7 +3467,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#D8D8D4',
+    backgroundColor: tokens.dot,
   },
   scheduleLine: {
     position: 'absolute',
@@ -3415,7 +3492,7 @@ const styles = StyleSheet.create({
   scheduleTimelineCard: {
     flex: 1,
     borderRadius: 7,
-    backgroundColor: '#F3F2F0',
+    backgroundColor: tokens.subtleSurface,
     paddingHorizontal: 12,
     paddingVertical: 9,
     overflow: 'hidden',
@@ -3537,13 +3614,6 @@ const styles = StyleSheet.create({
     lineHeight: 25,
     fontWeight: '400',
   },
-  settingsRowSubtitle: {
-    color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '400',
-    marginTop: 3,
-  },
   settingsChevron: {
     width: 24,
     color: tokens.tertiaryText,
@@ -3551,6 +3621,182 @@ const styles = StyleSheet.create({
     lineHeight: 36,
     fontWeight: '200',
     textAlign: 'right',
+  },
+  themeScreen: {
+    flex: 1,
+  },
+  themeContent: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 54,
+  },
+  themeIntro: {
+    color: tokens.secondaryText,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+    marginBottom: 22,
+  },
+  themeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 14,
+  },
+  themeOption: {
+    width: '48.2%',
+    minHeight: 188,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 8,
+    position: 'relative',
+    overflow: 'visible',
+  },
+  themeSelectedBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 25,
+    height: 25,
+    borderRadius: 13,
+    backgroundColor: '#777773',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  themeSelectedCheck: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  themePreview: {
+    height: 145,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingTop: 7,
+    overflow: 'hidden',
+  },
+  themePreviewHeader: {
+    height: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  themePreviewMonth: {
+    color: tokens.text,
+    fontSize: 8,
+    lineHeight: 11,
+    fontWeight: '500',
+  },
+  themePreviewWeekdays: {
+    height: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  themePreviewWeekday: {
+    flex: 1,
+    color: tokens.tertiaryText,
+    fontSize: 5,
+    lineHeight: 8,
+    textAlign: 'center',
+  },
+  themePreviewDates: {
+    height: 23,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  themePreviewDateCell: {
+    flex: 1,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  themePreviewSelectedDate: {
+    position: 'absolute',
+    width: 19,
+    height: 19,
+    borderRadius: 10,
+  },
+  themePreviewDate: {
+    color: tokens.secondaryText,
+    fontSize: 6,
+    lineHeight: 9,
+    fontVariant: ['tabular-nums'],
+  },
+  themePreviewTimeline: {
+    flex: 1,
+    paddingTop: 5,
+    gap: 3,
+  },
+  themePreviewTimelineRow: {
+    flex: 1,
+    minHeight: 33,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  themePreviewTime: {
+    width: 29,
+    color: tokens.text,
+    fontSize: 6,
+    lineHeight: 9,
+    fontVariant: ['tabular-nums'],
+  },
+  themePreviewRail: {
+    width: 17,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  themePreviewDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    zIndex: 1,
+  },
+  themePreviewLine: {
+    position: 'absolute',
+    top: 8,
+    bottom: -4,
+    width: 1,
+  },
+  themePreviewCardsRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 3,
+  },
+  themePreviewCard: {
+    flex: 1,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 4,
+  },
+  themePreviewCardWide: {
+    flex: 1,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 4,
+  },
+  themePreviewCardTitle: {
+    color: tokens.text,
+    fontSize: 6,
+    lineHeight: 8,
+  },
+  themePreviewCardTime: {
+    color: tokens.tertiaryText,
+    fontSize: 5,
+    lineHeight: 7,
+    marginTop: 2,
+  },
+  themeOptionName: {
+    color: tokens.text,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+    textAlign: 'center',
+    paddingTop: 9,
+    paddingBottom: 2,
   },
   proScreen: {
     flex: 1,
@@ -3568,13 +3814,6 @@ const styles = StyleSheet.create({
     fontSize: 32,
     lineHeight: 39,
     fontWeight: '300',
-  },
-  proHeroSubtitle: {
-    color: tokens.secondaryText,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '400',
-    marginTop: 14,
   },
   proFeatureList: {
     marginBottom: 62,
@@ -3594,13 +3833,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     fontWeight: '400',
-  },
-  proFeatureDescription: {
-    color: tokens.secondaryText,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '400',
-    marginTop: 7,
   },
   proChevron: {
     width: 24,
@@ -4017,4 +4249,7 @@ const styles = StyleSheet.create({
   disabled: {
     opacity: 0.38,
   },
-});
+  });
+};
+
+let styles = createStyles(tokens);

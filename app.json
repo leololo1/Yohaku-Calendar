@@ -3,14 +3,14 @@
     "name": "Yohaku Calendar",
     "slug": "yohaku-calendar",
     "version": "1.0.0",
-    "icon": "./images/icon/1d1bdf76-0817-463e-b570-5820d229ef4e.png",
+    "icon": "./images/icon/appicon1.png",
     "orientation": "portrait",
     "scheme": "yohakucalendar",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "18",
+      "buildNumber": "19",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -121,7 +121,8 @@
         {
           "iCloudContainerIdentifier": "iCloud.yohaku-calendar"
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }
