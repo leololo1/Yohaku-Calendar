@@ -1,0 +1,40 @@
+diff --git a/node_modules/expo-widgets/ios/Widgets/EntryView.swift b/node_modules/expo-widgets/ios/Widgets/EntryView.swift
+index 947fc2e..ed8d13a 100644
+--- a/node_modules/expo-widgets/ios/Widgets/EntryView.swift
++++ b/node_modules/expo-widgets/ios/Widgets/EntryView.swift
+@@ -24,6 +24,26 @@ public struct WidgetsEntryView: View {
+     return jsonString
+   }
+ 
++  private var widgetContainerBackground: Color {
++    guard !entry.name.hasPrefix("YohakuLock"),
++          let hex = entry.props?["themeBackground"] as? String else {
++      return .clear
++    }
++
++    let cleanedHex = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
++    guard cleanedHex.count == 6, let value = UInt64(cleanedHex, radix: 16) else {
++      return .clear
++    }
++
++    return Color(
++      .sRGB,
++      red: Double((value >> 16) & 0xFF) / 255,
++      green: Double((value >> 8) & 0xFF) / 255,
++      blue: Double(value & 0xFF) / 255,
++      opacity: 1
++    )
++  }
++
+   public var body: some View {
+     let layout = WidgetsStorage.getString(forKey: "__expo_widgets_\(entry.name)_layout") ?? ""
+     let node = evaluateLayout(layout: layout, props: entry.props ?? [:], environment: widgetEnvironment)
+@@ -31,7 +51,7 @@ public struct WidgetsEntryView: View {
+     if let node {
+       if #available(iOS 17.0, *) {
+         WidgetsDynamicView(name: entry.name, kind: .widget, node: node, entryIndex: entry.entryIndex, environmentString: widgetEnvironmentString)
+-          .containerBackground(.clear, for: .widget)
++          .containerBackground(widgetContainerBackground, for: .widget)
+       } else {
+         WidgetsDynamicView(name: entry.name, kind: .widget, node: node, entryIndex: entry.entryIndex, environmentString: widgetEnvironmentString)
+       }

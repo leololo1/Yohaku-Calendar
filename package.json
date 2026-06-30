@@ -7,6 +7,7 @@
     "node": ">=20.19.4"
   },
   "scripts": {
+    "postinstall": "patch-package",
     "start": "expo start",
     "ios": "expo start --ios",
     "android": "expo start --android",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@types/react": "~19.2.10",
     "babel-preset-expo": "~55.0.8",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   }
 }
