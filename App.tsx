@@ -1,14 +1,22 @@
 import 'expo-sqlite/localStorage/install';
 import * as Notifications from 'expo-notifications';
+import {
+  getTrackingPermissionsAsync,
+  isAvailable as isTrackingTransparencyAvailable,
+  requestTrackingPermissionsAsync,
+} from 'expo-tracking-transparency';
 import * as WebBrowser from 'expo-web-browser';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { StatusBar } from 'expo-status-bar';
 import { CloudStorage } from 'react-native-cloud-storage';
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { BannerAd, BannerAdSize, MobileAds, TestIds } from 'react-native-google-mobile-ads';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import type { YohakuTodayWidgetProps } from './widgets/YohakuTodayWidget';
 import {
   Alert,
   Animated,
+  AppState,
   Easing,
   Linking,
   Modal,
@@ -29,8 +37,9 @@ import {
 } from 'react-native';
 
 type CalendarMode = 'month';
-type ViewMode = CalendarMode | 'form' | 'pro' | 'notificationSettings' | 'theme' | 'backup';
+type ViewMode = CalendarMode | 'form' | 'pro' | 'weekStart' | 'holidayWeekdays' | 'notificationSettings' | 'theme' | 'backup';
 type FormMode = 'add' | 'edit';
+type WeekStart = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 type NotificationOption = 'none' | 'atStart' | 'before3' | 'before5' | 'before10' | 'before30' | 'before60';
 type TimeFieldKey = 'start' | 'end';
 
@@ -39,6 +48,7 @@ type CalendarEvent = {
   title: string;
   date: string;
   endDate?: string;
+  allDay?: boolean;
   start: string;
   end: string;
   location?: string;
@@ -68,6 +78,7 @@ type EventDraft = {
   title: string;
   date: string;
   endDate: string;
+  allDay: boolean;
   start: string;
   end: string;
   startNotifications: NotificationOption[];
@@ -112,11 +123,14 @@ type ScheduleTimelineGroup = {
 };
 
 const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+const weekdayNames = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
 const appStoreAppId = '6780133048';
 const appStoreShareUrl = `https://apps.apple.com/app/id${appStoreAppId}`;
 const appStoreReviewUrl = `itms-apps://itunes.apple.com/app/id${appStoreAppId}?action=write-review`;
 const appStoreReviewFallbackUrl = `${appStoreShareUrl}?action=write-review`;
 const appleStandardEulaUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+const productionBannerAdUnitId = 'ca-app-pub-6757694633642168/2928519428';
+const isProductionBuild = process.env.EXPO_PUBLIC_BUILD_PROFILE === 'production';
 const pickerColumnHeight = 224;
 const pickerItemHeight = 38;
 const schedulePixelsPerMinute = 1.05;
@@ -133,8 +147,7 @@ const notificationOptions: { value: NotificationOption; label: string }[] = [
   { value: 'before60', label: '1時間前' },
 ];
 const switchColors = {
-  trackOff: '#D8D8D4',
-  trackOn: '#4F4F4B',
+  trackOff: '#FFFFFF',
   thumbOff: '#FFFFFF',
   thumbOn: '#FFFFFF',
 };
@@ -189,6 +202,8 @@ const notificationPermissionPromptedStorageKey = 'yohaku-calendar-notification-p
 const backupAutoEnabledStorageKey = 'yohaku-calendar-backup-auto-enabled';
 const backupLastBackupAtStorageKey = 'yohaku-calendar-backup-last-at';
 const themeStorageKey = 'yohaku-calendar-theme';
+const weekStartStorageKey = 'yohaku-calendar-week-start';
+const holidayWeekdaysStorageKey = 'yohaku-calendar-holiday-weekdays';
 const iCloudBackupDirectory = '/yohaku-calendar';
 const iCloudBackupPath = `${iCloudBackupDirectory}/backup.json`;
 const notificationIdentifierPrefix = 'yohaku-calendar-event-';
@@ -233,6 +248,12 @@ const themePalettes: ThemePalette[] = [
   { id: 'whisper', name: 'ウィスパー', background: '#FCFCFB', surface: '#F6F6F4', border: '#E9E9E5', dot: '#D8D8D1' },
   { id: 'soft-white-jp', name: 'ほの白', background: '#FFFDF9', surface: '#F8F3EA', border: '#E8DED0', dot: '#D1C0AA' },
 ];
+const themeDisplayOrder = [
+  'pure-white', 'soft-white', 'whisper', 'soft-white-jp', 'chalk', 'warm-snow',
+  'paper-white', 'milk', 'ivory', 'cream', 'vanilla', 'oat', 'linen', 'sand',
+  'warm-gray', 'greige', 'taupe', 'mocha-gray', 'milky-gray', 'fog', 'mist-gray', 'silver', 'stone-gray', 'dry-gray', 'cement',
+  'ash', 'platinum', 'light-slate', 'cloud', 'blue-gray', 'snow', 'pearl', 'moon', 'lavender-gray',
+] as const;
 const defaultTheme = themePalettes[0];
 const notificationOffsets: Record<Exclude<NotificationOption, 'none'>, number> = {
   atStart: 0,
@@ -371,7 +392,7 @@ const expandScheduleEntryColumns = (entries: ScheduleTimelineEntry[], columnCoun
   });
 
 const buildScheduleTimelineGroups = (events: CalendarEvent[], dateKey: string): ScheduleTimelineGroup[] => {
-  const sortedEvents = sortEventsForDate(events, dateKey);
+  const sortedEvents = sortEventsForDate(events.filter((event) => !event.allDay), dateKey);
   const groups: ScheduleTimelineGroup[] = [];
   const multiDayEvents = sortedEvents.filter(isMultiDayEvent);
   const singleDayEvents = sortedEvents.filter((event) => !isMultiDayEvent(event));
@@ -501,7 +522,7 @@ const notificationIdentifier = (eventId: string, option: Exclude<NotificationOpt
   `${notificationIdentifierPrefix}${eventId}-${option}`;
 
 const activeNotificationOptions = (event: CalendarEvent) =>
-  normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)).filter(
+  (event.allDay ? [] : normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification))).filter(
     (option): option is Exclude<NotificationOption, 'none'> => option !== 'none',
   );
 
@@ -514,6 +535,11 @@ const eventStartDateTime = (event: CalendarEvent) => {
 
 const eventEndDateTime = (event: CalendarEvent) => {
   const date = parseDateKey(eventEndDate(event));
+  if (event.allDay) {
+    date.setHours(23, 59, 59, 999);
+    return date;
+  }
+
   const end = minutesFromTime(event.end);
   date.setHours(Math.floor(end / 60), end % 60, 0, 0);
   return date;
@@ -641,6 +667,7 @@ const emptyDraft = (date: string): EventDraft => ({
   title: '',
   date,
   endDate: date,
+  allDay: false,
   start: '10:00',
   end: '11:00',
   startNotifications: ['none'],
@@ -661,10 +688,23 @@ const dateOpacityForEventCount = (eventCount: number) => {
   return 1;
 };
 
+const calendarDateColor = (
+  dayOfWeek: number,
+  holidayWeekdays: WeekStart[],
+) => {
+  const isHoliday = holidayWeekdays.includes(dayOfWeek as WeekStart);
+  if (!isHoliday && dayOfWeek !== 6) {
+    return null;
+  }
+
+  return isHoliday ? '#42100E' : '#002634';
+};
+
 const draftFromEvent = (event: CalendarEvent): EventDraft => ({
   title: event.title,
   date: event.date,
   endDate: eventEndDate(event),
+  allDay: event.allDay === true,
   start: event.start,
   end: event.end,
   startNotifications: normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)),
@@ -696,6 +736,7 @@ const normalizeBackupEvent = (value: unknown): CalendarEvent | null => {
     title: event.title,
     date: event.date,
     endDate: event.endDate,
+    allDay: event.allDay === true,
     start: event.start,
     end: event.end,
     startNotifications: normalizeNotifications(event.startNotifications ?? notificationsFromLegacy(event.notification)),
@@ -757,11 +798,18 @@ const initialTodayState = () => {
   };
 };
 
-const createMonthDays = (visibleMonth: Date, selectedDate: string, events: CalendarEvent[]): CalendarDay[] => {
+const createMonthDays = (
+  visibleMonth: Date,
+  selectedDate: string,
+  events: CalendarEvent[],
+  weekStartsOn: WeekStart = 0,
+): CalendarDay[] => {
   const firstDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
   const lastDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0);
-  const start = addDays(firstDay, -firstDay.getDay());
-  const end = addDays(lastDay, 6 - lastDay.getDay());
+  const leadingDays = (firstDay.getDay() - weekStartsOn + 7) % 7;
+  const trailingDays = (weekStartsOn + 6 - lastDay.getDay() + 7) % 7;
+  const start = addDays(firstDay, -leadingDays);
+  const end = addDays(lastDay, trailingDays);
   const totalDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
 
   return Array.from({ length: totalDays }, (_, index) => {
@@ -784,6 +832,8 @@ const buildYohakuTodayWidgetProps = (
   events: CalendarEvent[],
   date = new Date(),
   theme: ThemePalette = defaultTheme,
+  weekStartsOn: WeekStart = 0,
+  holidayWeekdays: WeekStart[] = [0],
 ): YohakuTodayWidgetProps => {
   const dateKey = toDateKey(date);
   const visibleMonth = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -791,12 +841,13 @@ const buildYohakuTodayWidgetProps = (
     events.filter((event) => eventOccursOnDate(event, dateKey)),
     dateKey,
   );
-  const calendarDays = createMonthDays(visibleMonth, dateKey, events);
+  const calendarDays = createMonthDays(visibleMonth, dateKey, events, weekStartsOn);
   const toWidgetEvent = (event: CalendarEvent) => ({
     id: event.id,
     title: event.title,
     date: event.date,
     endDate: eventEndDate(event),
+    allDay: event.allDay === true,
     time: event.start,
     end: event.end,
   });
@@ -810,12 +861,15 @@ const buildYohakuTodayWidgetProps = (
     themeSurface: theme.surface,
     themeBorder: theme.border,
     themeDot: theme.dot,
+    weekStartsOn,
+    holidayWeekdays,
     calendarDays: calendarDays.map((day) => ({
       key: day.key,
       label: day.label,
       muted: day.muted,
       selected: day.selected,
       eventCount: day.eventCount,
+      weekday: day.date.getDay(),
     })),
     totalCount: dayEvents.length,
     events: widgetEvents,
@@ -828,6 +882,8 @@ const buildYohakuTodayWidgetProps = (
 const buildYohakuTodayWidgetTimeline = (
   events: CalendarEvent[],
   theme: ThemePalette = defaultTheme,
+  weekStartsOn: WeekStart = 0,
+  holidayWeekdays: WeekStart[] = [0],
 ) => {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -851,12 +907,17 @@ const buildYohakuTodayWidgetTimeline = (
       const entryDate = new Date(timestamp);
       return {
         date: entryDate,
-        props: buildYohakuTodayWidgetProps(events, entryDate, theme),
+        props: buildYohakuTodayWidgetProps(events, entryDate, theme, weekStartsOn, holidayWeekdays),
       };
     });
 };
 
-const syncYohakuTodayWidget = (events: CalendarEvent[], theme: ThemePalette) => {
+const syncYohakuTodayWidget = (
+  events: CalendarEvent[],
+  theme: ThemePalette,
+  weekStartsOn: WeekStart,
+  holidayWeekdays: WeekStart[],
+) => {
   try {
     type YohakuWidgetApi = {
       updateSnapshot: (props: YohakuTodayWidgetProps) => void;
@@ -871,8 +932,8 @@ const syncYohakuTodayWidget = (events: CalendarEvent[], theme: ThemePalette) => 
       YohakuLockTasksWidget: YohakuWidgetApi;
       YohakuLockCalendarWidget: YohakuWidgetApi;
     };
-    const snapshot = buildYohakuTodayWidgetProps(events, new Date(), theme);
-    const timeline = buildYohakuTodayWidgetTimeline(events, theme);
+    const snapshot = buildYohakuTodayWidgetProps(events, new Date(), theme, weekStartsOn, holidayWeekdays);
+    const timeline = buildYohakuTodayWidgetTimeline(events, theme, weekStartsOn, holidayWeekdays);
 
     [
       YohakuWidgets.default,
@@ -891,7 +952,7 @@ const syncYohakuTodayWidget = (events: CalendarEvent[], theme: ThemePalette) => 
   }
 };
 
-export default function App() {
+function YohakuCalendarApp() {
   const [initialCalendarState] = useState(initialTodayState);
   const [mode, setMode] = useState<ViewMode>('month');
   const [lastCalendarMode, setLastCalendarMode] = useState<CalendarMode>('month');
@@ -903,6 +964,8 @@ export default function App() {
   const [draft, setDraft] = useState<EventDraft>(emptyDraft(initialCalendarState.todayKey));
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(defaultNotificationSettings);
   const [selectedThemeId, setSelectedThemeId] = useState(defaultTheme.id);
+  const [weekStartsOn, setWeekStartsOn] = useState<WeekStart>(0);
+  const [holidayWeekdays, setHolidayWeekdays] = useState<WeekStart[]>([0]);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -912,6 +975,8 @@ export default function App() {
   const [datePickerTarget, setDatePickerTarget] = useState<TimeFieldKey | null>(null);
   const [timePickerTarget, setTimePickerTarget] = useState<TimeFieldKey | null>(null);
   const [notificationPickerVisible, setNotificationPickerVisible] = useState(false);
+  const [isAdsReady, setIsAdsReady] = useState(false);
+  const [requestNonPersonalizedAdsOnly, setRequestNonPersonalizedAdsOnly] = useState(true);
   const [previousCalendarState, setPreviousCalendarState] = useState<CalendarRenderState | null>(null);
   const [calendarTransitionFade] = useState(() => new Animated.Value(1));
   const autoBackupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -920,6 +985,7 @@ export default function App() {
   const restoringBackupRef = useRef(false);
   const { width } = useWindowDimensions();
   const compact = width < 380;
+  const bannerUnitId = isProductionBuild ? productionBannerAdUnitId : TestIds.BANNER;
   const activeTheme = useMemo(
     () => themePalettes.find((theme) => theme.id === selectedThemeId) ?? defaultTheme,
     [selectedThemeId],
@@ -930,11 +996,69 @@ export default function App() {
   styles = activeStyles;
 
   useEffect(() => {
+    let cancelled = false;
+
+    const initializeAds = async () => {
+      let useNonPersonalizedAds = true;
+
+      if (isProductionBuild && process.env.EXPO_OS === 'ios' && isTrackingTransparencyAvailable()) {
+        try {
+          if (AppState.currentState !== 'active') {
+            await new Promise<void>((resolve) => {
+              let resolved = false;
+              const finish = () => {
+                if (resolved) return;
+                resolved = true;
+                subscription.remove();
+                resolve();
+              };
+              const subscription = AppState.addEventListener('change', (nextState) => {
+                if (nextState === 'active') finish();
+              });
+              setTimeout(finish, 1500);
+            });
+          }
+
+          const currentPermission = await getTrackingPermissionsAsync();
+          const permission = currentPermission.status === 'undetermined'
+            ? await requestTrackingPermissionsAsync()
+            : currentPermission;
+          useNonPersonalizedAds = !permission.granted;
+        } catch (error) {
+          console.warn('Tracking permission request failed', error);
+        }
+      }
+
+      if (cancelled) return;
+      setRequestNonPersonalizedAdsOnly(useNonPersonalizedAds);
+
+      try {
+        await MobileAds().initialize();
+      } catch (error) {
+        console.warn('MobileAds initialization failed', error);
+      }
+
+      if (!cancelled) {
+        setIsAdsReady(true);
+      }
+    };
+
+    void initializeAds();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
     const savedNotificationSettings = localStorage.getItem(notificationSettingsStorageKey);
     const notificationPermissionPrompted = localStorage.getItem(notificationPermissionPromptedStorageKey);
+    const savedAutoBackupEnabled = localStorage.getItem(backupAutoEnabledStorageKey);
     const savedLastBackupAt = localStorage.getItem(backupLastBackupAtStorageKey);
     const savedThemeId = localStorage.getItem(themeStorageKey);
+    const savedWeekStart = Number(localStorage.getItem(weekStartStorageKey));
+    const savedHolidayWeekdays = localStorage.getItem(holidayWeekdaysStorageKey);
 
     if (savedEvents) {
       try {
@@ -959,10 +1083,25 @@ export default function App() {
       }
     }
 
-    setAutoBackupEnabled(false);
+    setAutoBackupEnabled(savedAutoBackupEnabled === 'true');
     setLastBackupAt(savedLastBackupAt || null);
     if (savedThemeId && themePalettes.some((theme) => theme.id === savedThemeId)) {
       setSelectedThemeId(savedThemeId);
+    }
+    if (Number.isInteger(savedWeekStart) && savedWeekStart >= 0 && savedWeekStart <= 6) {
+      setWeekStartsOn(savedWeekStart as WeekStart);
+    }
+    if (savedHolidayWeekdays) {
+      try {
+        const parsedHolidayWeekdays = JSON.parse(savedHolidayWeekdays);
+        if (Array.isArray(parsedHolidayWeekdays)) {
+          setHolidayWeekdays(
+            Array.from(new Set(parsedHolidayWeekdays.filter((weekday) => Number.isInteger(weekday) && weekday >= 0 && weekday <= 6))) as WeekStart[],
+          );
+        }
+      } catch {
+        localStorage.removeItem(holidayWeekdaysStorageKey);
+      }
     }
     setStorageReady(true);
 
@@ -989,8 +1128,8 @@ export default function App() {
       return;
     }
 
-    syncYohakuTodayWidget(events, activeTheme);
-  }, [activeTheme, events, storageReady]);
+    syncYohakuTodayWidget(events, activeTheme, weekStartsOn, holidayWeekdays);
+  }, [activeTheme, events, holidayWeekdays, storageReady, weekStartsOn]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -1007,6 +1146,22 @@ export default function App() {
 
     localStorage.setItem(themeStorageKey, selectedThemeId);
   }, [selectedThemeId, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(weekStartStorageKey, String(weekStartsOn));
+  }, [storageReady, weekStartsOn]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    localStorage.setItem(holidayWeekdaysStorageKey, JSON.stringify(holidayWeekdays));
+  }, [holidayWeekdays, storageReady]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -1062,7 +1217,15 @@ export default function App() {
     }
 
     if (mode === 'pro') {
-      return 'Proプラン';
+      return '広告非表示';
+    }
+
+    if (mode === 'weekStart') {
+      return '週の始まり曜日';
+    }
+
+    if (mode === 'holidayWeekdays') {
+      return '休日の曜日';
     }
 
     if (mode === 'notificationSettings') {
@@ -1153,7 +1316,7 @@ export default function App() {
       return;
     }
 
-    if (mode === 'pro' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup') {
+    if (mode === 'pro' || mode === 'weekStart' || mode === 'holidayWeekdays' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup') {
       setMode('month');
       return;
     }
@@ -1178,12 +1341,17 @@ export default function App() {
       return;
     }
 
-    if (!isTime(start) || !isTime(end)) {
+    if (endDate < date) {
+      Alert.alert('終了日は開始日以降にしてください');
+      return;
+    }
+
+    if (!draft.allDay && (!isTime(start) || !isTime(end))) {
       Alert.alert('時刻は HH:MM で入力してください');
       return;
     }
 
-    if (endDate < date || (endDate === date && minutesFromTime(start) >= minutesFromTime(end))) {
+    if (!draft.allDay && endDate === date && minutesFromTime(start) >= minutesFromTime(end)) {
       Alert.alert('終了時刻は開始時刻より後にしてください');
       return;
     }
@@ -1193,9 +1361,10 @@ export default function App() {
       title,
       date,
       endDate,
+      allDay: draft.allDay,
       start,
       end,
-      startNotifications: normalizeNotifications(draft.startNotifications),
+      startNotifications: draft.allDay ? ['none'] : normalizeNotifications(draft.startNotifications),
     };
 
     setEvents((current) => {
@@ -1258,6 +1427,8 @@ export default function App() {
         allEvents={state.events}
         events={stateEvents}
         selectedDate={state.selectedDate}
+        weekStartsOn={weekStartsOn}
+        holidayWeekdays={holidayWeekdays}
         onSelectDate={(date) => selectDate(date)}
         onSwipeMonth={moveVisibleMonth}
         onSelectEvent={openEvent}
@@ -1353,14 +1524,8 @@ export default function App() {
     }
   };
 
-  const changeAutoBackupEnabled = async (enabled: boolean) => {
-    if (!enabled) {
-      setAutoBackupEnabled(false);
-      return;
-    }
-
-    Alert.alert('Pro限定機能です', '自動バックアップはProプランで利用できます。');
-    setAutoBackupEnabled(false);
+  const changeAutoBackupEnabled = (enabled: boolean) => {
+    setAutoBackupEnabled(enabled);
   };
 
   const restoreBackupFromICloud = async () => {
@@ -1529,6 +1694,8 @@ export default function App() {
           setEvents([]);
           setNotificationSettings(nextNotificationSettings);
           setSelectedThemeId(defaultTheme.id);
+          setWeekStartsOn(0);
+          setHolidayWeekdays([0]);
           setAutoBackupEnabled(false);
           setLastBackupAt(null);
           setSelectedEventId('');
@@ -1554,7 +1721,7 @@ export default function App() {
       <View style={[styles.page, compact && styles.pageCompact]}>
         <Header
           title={headerTitle}
-          canGoBack={mode === 'form' || mode === 'pro' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup'}
+          canGoBack={mode === 'form' || mode === 'pro' || mode === 'weekStart' || mode === 'holidayWeekdays' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup'}
           canPickMonth={mode === 'month'}
           showCalendarActions={mode === 'month'}
           showSaveAction={mode === 'form'}
@@ -1595,7 +1762,24 @@ export default function App() {
           />
         )}
 
-        {mode === 'pro' && <ProPlanScreen />}
+        {mode === 'pro' && <AdRemovalScreen />}
+
+        {mode === 'weekStart' && (
+          <WeekStartScreen selectedWeekStart={weekStartsOn} onSelectWeekStart={setWeekStartsOn} />
+        )}
+
+        {mode === 'holidayWeekdays' && (
+          <HolidayWeekdaysScreen
+            selectedWeekdays={holidayWeekdays}
+            onToggleWeekday={(weekday) => {
+              setHolidayWeekdays((current) =>
+                current.includes(weekday)
+                  ? current.filter((item) => item !== weekday)
+                  : [...current, weekday].sort((first, second) => first - second),
+              );
+            }}
+          />
+        )}
 
         {mode === 'notificationSettings' && (
           <NotificationSettingsScreen
@@ -1649,6 +1833,14 @@ export default function App() {
           onOpenPro={() => {
             setSettingsVisible(false);
             setMode('pro');
+          }}
+          onOpenWeekStart={() => {
+            setSettingsVisible(false);
+            setMode('weekStart');
+          }}
+          onOpenHolidayWeekdays={() => {
+            setSettingsVisible(false);
+            setMode('holidayWeekdays');
           }}
           onOpenNotificationSettings={() => {
             setSettingsVisible(false);
@@ -1706,7 +1898,29 @@ export default function App() {
           }}
         />
       </View>
+      {mode === 'month' && isAdsReady ? (
+        <SafeAreaView edges={['bottom']} style={styles.bannerSafeArea}>
+          <View style={styles.bannerWrap}>
+            <BannerAd
+              unitId={bannerUnitId}
+              size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
+              requestOptions={{ requestNonPersonalizedAdsOnly }}
+              onAdFailedToLoad={(error) => {
+                console.warn('BannerAd failed to load', error);
+              }}
+            />
+          </View>
+        </SafeAreaView>
+      ) : null}
     </View>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <YohakuCalendarApp />
+    </SafeAreaProvider>
   );
 }
 
@@ -1740,7 +1954,7 @@ function Header({
   return (
     <View style={styles.header}>
       {canGoBack ? (
-        <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => pressed && styles.pressed}>
+        <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => [styles.headerBackButton, pressed && styles.pressed]}>
           <Text style={styles.headerAction}>‹</Text>
         </Pressable>
       ) : showCalendarActions || canPickMonth ? (
@@ -1867,6 +2081,8 @@ function MonthScreen({
   allEvents,
   events,
   selectedDate,
+  weekStartsOn,
+  holidayWeekdays,
   onSelectDate,
   onSwipeMonth,
   onSelectEvent,
@@ -1877,6 +2093,8 @@ function MonthScreen({
   allEvents: CalendarEvent[];
   events: CalendarEvent[];
   selectedDate: string;
+  weekStartsOn: WeekStart;
+  holidayWeekdays: WeekStart[];
   onSelectDate: (date: Date) => void;
   onSwipeMonth: (amount: number) => void;
   onSelectEvent: (event: CalendarEvent) => void;
@@ -1889,13 +2107,19 @@ function MonthScreen({
   const currentMonth = addMonths(anchorMonth, pageIndex);
   const currentMonthKey = monthKey(currentMonth);
   const currentPageX = -(pageBuffer + pageIndex) * viewportWidth;
+  const orderedWeekdayIndexes = useMemo(
+    () => Array.from({ length: 7 }, (_, index) => (weekStartsOn + index) % 7),
+    [weekStartsOn],
+  );
   const monthPages = useMemo(
     () =>
       pageOffsets.map((offset) => ({
         offset,
-        days: Math.abs(offset - pageIndex) <= 1 ? createMonthDays(addMonths(anchorMonth, offset), selectedDate, allEvents) : null,
+        days: Math.abs(offset - pageIndex) <= 1
+          ? createMonthDays(addMonths(anchorMonth, offset), selectedDate, allEvents, weekStartsOn)
+          : null,
       })),
-    [allEvents, anchorMonth, pageIndex, pageOffsets, selectedDate],
+    [allEvents, anchorMonth, pageIndex, pageOffsets, selectedDate, weekStartsOn],
   );
 
   useEffect(() => {
@@ -1973,31 +2197,48 @@ function MonthScreen({
               {page.days ? (
                 <>
                   <View style={styles.weekRow}>
-                    {weekdays.map((weekday) => (
-                      <Text key={weekday} style={styles.weekday}>
-                        {weekday}
+                    {orderedWeekdayIndexes.map((weekdayIndex) => (
+                      <Text
+                        key={weekdayIndex}
+                        style={[
+                          styles.weekday,
+                          holidayWeekdays.includes(weekdayIndex as WeekStart) && styles.holidayText,
+                          weekdayIndex === 6 && !holidayWeekdays.includes(6) && styles.saturdayText,
+                        ]}
+                      >
+                        {weekdays[weekdayIndex]}
                       </Text>
                     ))}
                   </View>
 
                   <View style={[styles.calendarGrid, compact && styles.calendarGridCompact]}>
-                    {page.days.map((day) => (
-                      <Pressable
-                        key={day.key}
-                        disabled={day.muted}
-                        onPress={() => onSelectDate(day.date)}
-                        onLongPress={() => onSelectDate(day.date)}
-                        style={styles.dateCell}
-                      >
-                        {day.muted ? null : (
-                          <>
+                    {page.days.map((day) => {
+                      const dateColor = calendarDateColor(day.date.getDay(), holidayWeekdays);
+
+                      return (
+                        <Pressable
+                          key={day.key}
+                          disabled={day.muted}
+                          onPress={() => onSelectDate(day.date)}
+                          onLongPress={() => onSelectDate(day.date)}
+                          style={styles.dateCell}
+                        >
+                          {day.muted ? null : (
                             <AnimatedSelectedCircle selected={day.selected} style={styles.dateCircle}>
-                              <Text style={[styles.dateText, { opacity: dateOpacityForEventCount(day.eventCount) }]}>{day.label}</Text>
+                              <Text
+                                style={[
+                                  styles.dateText,
+                                  dateColor ? { color: dateColor } : null,
+                                  { opacity: dateOpacityForEventCount(day.eventCount) },
+                                ]}
+                              >
+                                {day.label}
+                              </Text>
                             </AnimatedSelectedCircle>
-                          </>
-                        )}
-                      </Pressable>
-                    ))}
+                          )}
+                        </Pressable>
+                      );
+                    })}
                   </View>
                 </>
               ) : null}
@@ -2137,13 +2378,19 @@ function MonthPicker({
 const settingsSections = [
   [
     {
-      title: 'Proプラン',
+      title: '広告非表示',
     },
     {
-      title: '通知設定',
+      title: '週の始まり曜日',
+    },
+    {
+      title: '休日の曜日',
     },
     {
       title: 'テーマカラー',
+    },
+    {
+      title: '通知設定',
     },
     {
       title: 'バックアップ',
@@ -2180,6 +2427,8 @@ function SettingsSheet({
   onClose,
   onDismiss,
   onOpenPro,
+  onOpenWeekStart,
+  onOpenHolidayWeekdays,
   onOpenNotificationSettings,
   onOpenTheme,
   onOpenBackup,
@@ -2192,6 +2441,8 @@ function SettingsSheet({
   onClose: () => void;
   onDismiss: () => void;
   onOpenPro: () => void;
+  onOpenWeekStart: () => void;
+  onOpenHolidayWeekdays: () => void;
   onOpenNotificationSettings: () => void;
   onOpenTheme: () => void;
   onOpenBackup: () => void;
@@ -2221,11 +2472,15 @@ function SettingsSheet({
                       sectionIndex === 0 && itemIndex === 0
                         ? onOpenPro
                         : sectionIndex === 0 && itemIndex === 1
-                          ? onOpenNotificationSettings
+                          ? onOpenWeekStart
                           : sectionIndex === 0 && itemIndex === 2
-                            ? onOpenTheme
+                            ? onOpenHolidayWeekdays
                             : sectionIndex === 0 && itemIndex === 3
-                              ? onOpenBackup
+                              ? onOpenTheme
+                              : sectionIndex === 0 && itemIndex === 4
+                                ? onOpenNotificationSettings
+                                : sectionIndex === 0 && itemIndex === 5
+                                  ? onOpenBackup
                               : sectionIndex === 1 && itemIndex === 0
                               ? onShareApp
                             : sectionIndex === 1 && itemIndex === 1
@@ -2258,6 +2513,72 @@ function SettingsRow({ title, onPress }: { title: string; onPress?: () => void }
   );
 }
 
+function WeekStartScreen({
+  selectedWeekStart,
+  onSelectWeekStart,
+}: {
+  selectedWeekStart: WeekStart;
+  onSelectWeekStart: (weekStart: WeekStart) => void;
+}) {
+  return (
+    <WeekdaySelectionScreen
+      selectedWeekdays={[selectedWeekStart]}
+      onPressWeekday={onSelectWeekStart}
+    />
+  );
+}
+
+function HolidayWeekdaysScreen({
+  selectedWeekdays,
+  onToggleWeekday,
+}: {
+  selectedWeekdays: WeekStart[];
+  onToggleWeekday: (weekday: WeekStart) => void;
+}) {
+  return (
+    <WeekdaySelectionScreen
+      selectedWeekdays={selectedWeekdays}
+      onPressWeekday={onToggleWeekday}
+    />
+  );
+}
+
+function WeekdaySelectionScreen({
+  selectedWeekdays,
+  onPressWeekday,
+}: {
+  selectedWeekdays: WeekStart[];
+  onPressWeekday: (weekday: WeekStart) => void;
+}) {
+  return (
+    <ScrollView
+      style={styles.weekStartScreen}
+      contentContainerStyle={styles.weekStartContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.weekStartList}>
+        {weekdayNames.map((weekday, index) => {
+          const weekdayValue = index as WeekStart;
+          const selected = selectedWeekdays.includes(weekdayValue);
+
+          return (
+            <Pressable
+              key={weekday}
+              onPress={() => onPressWeekday(weekdayValue)}
+              style={({ pressed }) => [styles.weekStartRow, pressed && styles.pressed]}
+            >
+              <Text style={styles.weekStartRowTitle}>{weekday}</Text>
+              <View style={[styles.weekStartSelection, selected && styles.weekStartSelectionSelected]}>
+                {selected ? <Text style={styles.weekStartCheck}>✓</Text> : null}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
 function ThemeColorScreen({
   selectedThemeId,
   onSelectTheme,
@@ -2269,143 +2590,211 @@ function ThemeColorScreen({
 
   return (
     <ScrollView style={styles.themeScreen} contentContainerStyle={styles.themeContent} showsVerticalScrollIndicator={false}>
-      <Text style={styles.themeIntro}>色合いを選択してください。</Text>
+      <Text style={styles.themeIntro}>テーマごとに、背景・カード・線・選択丸の色が変わります。</Text>
       <View style={styles.themeGrid}>
-        {themePalettes.map((theme) => {
-          const selected = theme.id === selectedThemeId;
-
-          return (
-            <Pressable
+        {themeDisplayOrder.map((themeId) => {
+          const theme = themePalettes.find((palette) => palette.id === themeId);
+          return theme ? (
+            <ThemeOptionCard
               key={theme.id}
-              onPress={() => onSelectTheme(theme.id)}
-              style={({ pressed }) => [
-                styles.themeOption,
-                { backgroundColor: theme.background, borderColor: selected ? '#777773' : theme.border },
-                pressed && styles.pressed,
-              ]}
-            >
-              {selected ? (
-                <View style={styles.themeSelectedBadge}>
-                  <Text style={styles.themeSelectedCheck}>✓</Text>
-                </View>
-              ) : null}
-
-              <View style={[styles.themePreview, { backgroundColor: theme.background, borderColor: theme.border }]}>
-                <View style={styles.themePreviewHeader}>
-                  <MaterialIcons name="menu" size={11} color={tokens.text} />
-                  <Text style={styles.themePreviewMonth}>2026.6⌄</Text>
-                  <MaterialIcons name="refresh" size={11} color={tokens.text} />
-                </View>
-
-                <View style={styles.themePreviewWeekdays}>
-                  {weekdays.map((weekday) => (
-                    <Text key={weekday} style={styles.themePreviewWeekday}>{weekday}</Text>
-                  ))}
-                </View>
-
-                <View style={styles.themePreviewDates}>
-                  {previewDates.map((date) => (
-                    <View key={date} style={styles.themePreviewDateCell}>
-                      {date === '27' ? <View style={[styles.themePreviewSelectedDate, { backgroundColor: theme.dot }]} /> : null}
-                      <Text style={styles.themePreviewDate}>{date}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                <View style={styles.themePreviewTimeline}>
-                  <View style={styles.themePreviewTimelineRow}>
-                    <Text style={styles.themePreviewTime}>19:00</Text>
-                    <View style={styles.themePreviewRail}>
-                      <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
-                      <View style={[styles.themePreviewLine, { backgroundColor: theme.border }]} />
-                    </View>
-                    <View style={styles.themePreviewCardsRow}>
-                      <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
-                        <Text style={styles.themePreviewCardTitle}>テスト1</Text>
-                        <Text style={styles.themePreviewCardTime}>~20:00</Text>
-                      </View>
-                      <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
-                        <Text style={styles.themePreviewCardTitle}>テスト2</Text>
-                        <Text style={styles.themePreviewCardTime}>~20:00</Text>
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.themePreviewTimelineRow}>
-                    <Text style={styles.themePreviewTime}>20:00</Text>
-                    <View style={styles.themePreviewRail}>
-                      <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
-                    </View>
-                    <View style={[styles.themePreviewCardWide, { backgroundColor: theme.surface }]}>
-                      <Text style={styles.themePreviewCardTitle}>テスト3</Text>
-                      <Text style={styles.themePreviewCardTime}>~21:00</Text>
-                    </View>
-                  </View>
-                </View>
-              </View>
-
-              <Text style={styles.themeOptionName}>{theme.name}</Text>
-            </Pressable>
-          );
+              theme={theme}
+              selected={theme.id === selectedThemeId}
+              previewDates={previewDates}
+              onSelect={() => onSelectTheme(theme.id)}
+            />
+          ) : null;
         })}
       </View>
     </ScrollView>
   );
 }
 
-const proFeatures = [
-  {
-    title: '広告なし',
-  },
-  {
-    title: 'iCloudの自動バックアップ',
-  },
-];
-
-function ProPlanScreen() {
+function ThemeOptionCard({
+  theme,
+  selected,
+  previewDates,
+  onSelect,
+}: {
+  theme: ThemePalette;
+  selected: boolean;
+  previewDates: string[];
+  onSelect: () => void;
+}) {
   return (
-    <ScrollView style={styles.proScreen} contentContainerStyle={styles.proContent} showsVerticalScrollIndicator={false}>
-      <View style={styles.proHero}>
-        <Text style={styles.proHeroTitle}>Yohaku Pro</Text>
+    <Pressable
+      onPress={onSelect}
+      style={({ pressed }) => [
+        styles.themeOption,
+        { backgroundColor: theme.background, borderColor: selected ? '#777773' : theme.border },
+        pressed && styles.pressed,
+      ]}
+    >
+      {selected ? (
+        <View style={styles.themeSelectedBadge}>
+          <Text style={styles.themeSelectedCheck}>✓</Text>
+        </View>
+      ) : null}
+
+      <View style={[styles.themePreview, { backgroundColor: theme.background, borderColor: theme.border }]}>
+        <View style={styles.themePreviewHeader}>
+          <MaterialIcons name="menu" size={11} color={tokens.text} />
+          <Text style={styles.themePreviewMonth}>2026.6⌄</Text>
+          <MaterialIcons name="refresh" size={11} color={tokens.text} />
+        </View>
+
+        <View style={styles.themePreviewWeekdays}>
+          {weekdays.map((weekday) => (
+            <Text key={weekday} style={styles.themePreviewWeekday}>{weekday}</Text>
+          ))}
+        </View>
+
+        <View style={styles.themePreviewDates}>
+          {previewDates.map((date) => (
+            <View key={date} style={styles.themePreviewDateCell}>
+              {date === '27' ? <View style={[styles.themePreviewSelectedDate, { backgroundColor: theme.dot }]} /> : null}
+              <Text style={styles.themePreviewDate}>{date}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.themePreviewTimeline}>
+          <View style={styles.themePreviewTimelineRow}>
+            <Text style={styles.themePreviewTime}>19:00</Text>
+            <View style={styles.themePreviewRail}>
+              <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
+              <View style={[styles.themePreviewLine, { backgroundColor: theme.border }]} />
+            </View>
+            <View style={styles.themePreviewCardsRow}>
+              <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
+                <Text style={styles.themePreviewCardTitle}>テスト1</Text>
+                <Text style={styles.themePreviewCardTime}>~20:00</Text>
+              </View>
+              <View style={[styles.themePreviewCard, { backgroundColor: theme.surface }]}>
+                <Text style={styles.themePreviewCardTitle}>テスト2</Text>
+                <Text style={styles.themePreviewCardTime}>~20:00</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.themePreviewTimelineRow}>
+            <Text style={styles.themePreviewTime}>20:00</Text>
+            <View style={styles.themePreviewRail}>
+              <View style={[styles.themePreviewDot, { backgroundColor: theme.dot }]} />
+            </View>
+            <View style={[styles.themePreviewCardWide, { backgroundColor: theme.surface }]}>
+              <Text style={styles.themePreviewCardTitle}>テスト3</Text>
+              <Text style={styles.themePreviewCardTime}>~21:00</Text>
+            </View>
+          </View>
+        </View>
       </View>
 
-      <View style={styles.proFeatureList}>
-        {proFeatures.map((feature) => (
-          <Pressable key={feature.title} style={({ pressed }) => [styles.proFeatureRow, pressed && styles.pressed]}>
-            <View style={styles.proFeatureText}>
-              <Text style={styles.proFeatureTitle}>{feature.title}</Text>
-            </View>
-            <Text style={styles.proChevron}>›</Text>
+      <Text style={styles.themeOptionName}>{theme.name}</Text>
+    </Pressable>
+  );
+}
+
+function AdRemovalScreen() {
+  const legalLinks = [
+    { label: 'プライバシーポリシー' },
+    { label: '利用規約', url: appleStandardEulaUrl },
+    { label: '特定商取引法に基づく表記' },
+  ];
+
+  const openLegalLink = (label: string, url?: string) => {
+    if (!url) {
+      Alert.alert(`${label}は準備中です`);
+      return;
+    }
+
+    void WebBrowser.openBrowserAsync(url, {
+      presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
+    }).catch(() => {
+      Linking.openURL(url).catch(() => {
+        Alert.alert(`${label}を開けませんでした`);
+      });
+    });
+  };
+
+  return (
+    <ScrollView style={styles.proScreen} contentContainerStyle={styles.proContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.proIntro}>
+        <Text style={styles.proHeadline}>タイムラインをもっと広く</Text>
+      </View>
+
+      <View style={styles.proComparison}>
+        <AdTimelinePreview showAd />
+        <AdTimelinePreview />
+      </View>
+
+      <View style={styles.proPurchasePanel}>
+        <View style={styles.proPurchasePriceBlock}>
+          <Text style={styles.proPurchaseType}>買い切り</Text>
+          <Text style={styles.proPurchasePrice}>¥500</Text>
+        </View>
+        <Pressable style={({ pressed }) => [styles.proPurchaseButton, pressed && styles.pressed]}>
+          <Text style={styles.proPurchaseButtonText}>購入する</Text>
+          <MaterialIcons name="chevron-right" size={22} color={tokens.text} />
+        </Pressable>
+      </View>
+
+      <Pressable style={({ pressed }) => [styles.proRestoreButton, pressed && styles.pressed]}>
+        <Text style={styles.proRestoreText}>購入履歴を復元</Text>
+      </Pressable>
+
+      <View style={styles.proLegalLinks}>
+        {legalLinks.map((link) => (
+          <Pressable
+            key={link.label}
+            accessibilityRole="link"
+            onPress={() => openLegalLink(link.label, link.url)}
+            style={({ pressed }) => [styles.proLegalLinkButton, pressed && styles.pressed]}
+          >
+            <Text numberOfLines={1} style={styles.proLegalLinkText}>{link.label}</Text>
           </Pressable>
         ))}
       </View>
-
-      <View style={styles.proPlanSection}>
-        <Text style={styles.proSectionLabel}>料金プラン</Text>
-        <View style={styles.proPlanCard}>
-          <Pressable style={({ pressed }) => [styles.proPlanRow, pressed && styles.pressed]}>
-            <Text style={styles.proPlanName}>月額</Text>
-            <View style={styles.proPlanValue}>
-              <Text style={styles.proPlanPrice}>300円 / 月</Text>
-              <Text style={styles.proPlanCheck}>✓</Text>
-            </View>
-          </Pressable>
-          <Pressable style={({ pressed }) => [styles.proPlanRow, pressed && styles.pressed]}>
-            <Text style={styles.proPlanName}>年額</Text>
-            <Text style={styles.proPlanPrice}>2,400円 / 年</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.proCancelText}>いつでも解約できます。</Text>
-      </View>
-
-      <View style={styles.proActions}>
-        <Pressable style={({ pressed }) => [styles.proStartButton, pressed && styles.pressed]}>
-          <Text style={styles.proStartButtonText}>Proをはじめる</Text>
-        </Pressable>
-        <Pressable style={({ pressed }) => pressed && styles.pressed}>
-          <Text style={styles.proRestoreText}>購入を復元</Text>
-        </Pressable>
-      </View>
     </ScrollView>
+  );
+}
+
+function AdTimelinePreview({ showAd = false }: { showAd?: boolean }) {
+  const rows = [
+    { time: '19:00', title: '打ち合わせ', end: '~20:00' },
+    { time: '20:00', title: '資料の確認', end: '~21:00' },
+    { time: '21:00', title: 'メール返信', end: '~22:00' },
+  ];
+
+  return (
+    <View style={styles.proPreviewPanel}>
+      <Text style={styles.proPreviewLabel}>{showAd ? '広告あり' : '広告なし'}</Text>
+      <Text style={styles.proPreviewDate}>6.27</Text>
+      <View style={styles.proPreviewTimeline}>
+        {rows.map((row) => (
+          <View key={row.time} style={styles.proPreviewRow}>
+            <Text style={styles.proPreviewTime}>{row.time}</Text>
+            <View style={styles.proPreviewRail}>
+              <View style={styles.proPreviewDot} />
+              <View style={styles.proPreviewLine} />
+            </View>
+            <View style={styles.proPreviewTask}>
+              <Text style={styles.proPreviewTaskTitle}>{row.title}</Text>
+              <Text style={styles.proPreviewTaskEnd}>{row.end}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+      {showAd ? (
+        <View style={styles.proPreviewAd}>
+          <View style={styles.proPreviewAdMark}>
+            <Text style={styles.proPreviewAdMarkText}>AD</Text>
+          </View>
+          <View style={styles.proPreviewAdCopy}>
+            <Text style={styles.proPreviewAdTitle}>シンプルで心地よい時間を。</Text>
+            <Text style={styles.proPreviewAdBrand}>Yohaku Calendar</Text>
+          </View>
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -2463,7 +2852,7 @@ function NotificationToggleRow({
         <Switch
           value={value}
           onValueChange={onValueChange}
-          trackColor={{ false: switchColors.trackOff, true: switchColors.trackOn }}
+                    trackColor={{ false: switchColors.trackOff, true: tokens.dot }}
           thumbColor={value ? switchColors.thumbOn : switchColors.thumbOff}
           ios_backgroundColor={switchColors.trackOff}
         />
@@ -2535,7 +2924,7 @@ function BackupToggleRow({
           value={value}
           onValueChange={onValueChange}
           disabled={disabled}
-          trackColor={{ false: switchColors.trackOff, true: switchColors.trackOn }}
+                    trackColor={{ false: switchColors.trackOff, true: tokens.dot }}
           thumbColor={value ? switchColors.thumbOn : switchColors.thumbOff}
           ios_backgroundColor={switchColors.trackOff}
         />
@@ -2912,9 +3301,11 @@ function PickerItemText({ scrollY, index, children }: { scrollY: Animated.Value;
 }
 
 function ScheduleTimeline({ events, selectedDate, onSelectEvent }: { events: CalendarEvent[]; selectedDate: string; onSelectEvent: (event: CalendarEvent) => void }) {
-  const groups = useMemo(() => buildScheduleTimelineGroups(events, selectedDate), [events, selectedDate]);
-  const multiDayEvents = useMemo(() => events.filter(isMultiDayEvent), [events]);
-  const hasSingleDayEvents = events.some((event) => !isMultiDayEvent(event));
+  const allDayEvents = useMemo(() => events.filter((event) => event.allDay), [events]);
+  const timedEvents = useMemo(() => events.filter((event) => !event.allDay), [events]);
+  const groups = useMemo(() => buildScheduleTimelineGroups(timedEvents, selectedDate), [timedEvents, selectedDate]);
+  const multiDayEvents = useMemo(() => timedEvents.filter(isMultiDayEvent), [timedEvents]);
+  const hasSingleDayEvents = timedEvents.some((event) => !isMultiDayEvent(event));
   const showMultiDayOverlay = multiDayEvents.length > 0 && hasSingleDayEvents;
   const groupHeights = useMemo(() => groups.map(scheduleGroupHeight), [groups]);
   const timelineHeight = groupHeights.reduce((total, height) => total + height, 0) + Math.max(0, groupHeights.length - 1) * scheduleTimelineGroupGap;
@@ -2922,36 +3313,66 @@ function ScheduleTimeline({ events, selectedDate, onSelectEvent }: { events: Cal
 
   return (
     <View style={styles.scheduleTimeline}>
-      {showMultiDayOverlay ? (
-        <View pointerEvents="box-none" style={[styles.scheduleTimelineOverlay, { height: timelineHeight }]}>
-          {multiDayEvents.map((event, index) => (
-            <View
-              key={event.id}
-              style={[
-                styles.scheduleTimelineCardSlot,
-                {
-                  top: 0,
-                  height: timelineHeight,
-                  left: `${(index / columnCount) * 100}%`,
-                  width: `${100 / columnCount}%`,
-                },
-              ]}
-            >
-              <Pressable onPress={() => onSelectEvent(event)} style={({ pressed }) => [styles.scheduleTimelineCard, pressed && styles.pressed]}>
-                <Text style={styles.scheduleTitle} numberOfLines={2} ellipsizeMode="tail">
-                  {event.title}
-                </Text>
-                <Text style={styles.scheduleCardEndTime} numberOfLines={isMultiDayEvent(event) ? 2 : 1} ellipsizeMode="clip" adjustsFontSizeToFit minimumFontScale={0.85}>
-                  {formatScheduleEndLabel(event)}
-                </Text>
-              </Pressable>
+      {allDayEvents.length > 0 ? (
+        <View style={timedEvents.length > 0 ? styles.scheduleAllDaySectionWithTimeline : undefined}>
+          <View style={styles.scheduleAllDayList}>
+            {allDayEvents.map((event, index) => (
+              <View key={event.id} style={styles.scheduleAllDayRow}>
+                <View style={styles.scheduleAllDayTimes}>
+                  {index === 0 ? <Text style={styles.scheduleStart}>終日</Text> : null}
+                </View>
+                <View style={styles.scheduleAllDayMarker}>
+                  <View style={[styles.scheduleDot, styles.scheduleAllDayDot]} />
+                </View>
+                <View style={styles.scheduleAllDayCardSlot}>
+                  <Pressable
+                    onPress={() => onSelectEvent(event)}
+                    style={({ pressed }) => [styles.scheduleAllDayCard, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.scheduleAllDayTitle} numberOfLines={2} ellipsizeMode="tail">
+                      {event.title}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
+      {timedEvents.length > 0 ? (
+        <View style={styles.scheduleTimedTimeline}>
+          {showMultiDayOverlay ? (
+            <View pointerEvents="box-none" style={[styles.scheduleTimelineOverlay, { height: timelineHeight }]}>
+              {multiDayEvents.map((event, index) => (
+                <View
+                  key={event.id}
+                  style={[
+                    styles.scheduleTimelineCardSlot,
+                    {
+                      top: 0,
+                      height: timelineHeight,
+                      left: `${(index / columnCount) * 100}%`,
+                      width: `${100 / columnCount}%`,
+                    },
+                  ]}
+                >
+                  <Pressable onPress={() => onSelectEvent(event)} style={({ pressed }) => [styles.scheduleTimelineCard, pressed && styles.pressed]}>
+                    <Text style={styles.scheduleTitle} numberOfLines={2} ellipsizeMode="tail">
+                      {event.title}
+                    </Text>
+                    <Text style={styles.scheduleCardEndTime} numberOfLines={isMultiDayEvent(event) ? 2 : 1} ellipsizeMode="clip" adjustsFontSizeToFit minimumFontScale={0.85}>
+                      {formatScheduleEndLabel(event)}
+                    </Text>
+                  </Pressable>
+                </View>
+              ))}
             </View>
+          ) : null}
+          {groups.map((group) => (
+            <ScheduleTimelineGroupView key={group.id} group={group} onSelectEvent={onSelectEvent} />
           ))}
         </View>
       ) : null}
-      {groups.map((group) => (
-        <ScheduleTimelineGroupView key={group.id} group={group} onSelectEvent={onSelectEvent} />
-      ))}
     </View>
   );
 }
@@ -3059,12 +3480,23 @@ function EventForm({
   return (
     <ScrollView style={styles.formScreen} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
       <FormField label="タイトル" value={draft.title} onChangeText={(value) => updateText('title', value)} autoFocus />
+      <AllDayFormField
+        value={draft.allDay}
+        onValueChange={(allDay) =>
+          onChange({
+            ...draft,
+            allDay,
+            startNotifications: allDay ? ['none'] : draft.startNotifications,
+          })
+        }
+      />
       <DateTimeFormField
         label="開始"
         date={formatFullDate(draft.date)}
         time={draft.start}
         onPressDate={() => onOpenDatePicker('start')}
         onPressTime={() => onOpenTimePicker('start')}
+        timeDisabled={draft.allDay}
       />
       <DateTimeFormField
         label="終了"
@@ -3072,8 +3504,13 @@ function EventForm({
         time={draft.end}
         onPressDate={() => onOpenDatePicker('end')}
         onPressTime={() => onOpenTimePicker('end')}
+        timeDisabled={draft.allDay}
       />
-      <NotificationFormField value={formatNotificationSummary(draft.startNotifications, '開始時刻')} onPress={onOpenNotificationPicker} />
+      <NotificationFormField
+        value={formatNotificationSummary(draft.startNotifications, '開始時刻')}
+        onPress={onOpenNotificationPicker}
+        disabled={draft.allDay}
+      />
     </ScrollView>
   );
 
@@ -3099,6 +3536,23 @@ function EventForm({
   );
 }
 
+function AllDayFormField({ value, onValueChange }: { value: boolean; onValueChange: (value: boolean) => void }) {
+  return (
+    <View style={styles.allDayFormField}>
+      <Text style={styles.allDayFormLabel}>終日予定</Text>
+      <View style={styles.allDaySwitchFrame}>
+        <Switch
+          value={value}
+          onValueChange={onValueChange}
+                    trackColor={{ false: switchColors.trackOff, true: tokens.dot }}
+          thumbColor={value ? switchColors.thumbOn : switchColors.thumbOff}
+          ios_backgroundColor={switchColors.trackOff}
+        />
+      </View>
+    </View>
+  );
+}
+
 function DateFormField({ label, value, onPress }: { label: string; value: string; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.formField, pressed && styles.pressed]}>
@@ -3117,12 +3571,14 @@ function DateTimeFormField({
   time,
   onPressDate,
   onPressTime,
+  timeDisabled = false,
 }: {
   label: string;
   date: string;
   time: string;
   onPressDate: () => void;
   onPressTime: () => void;
+  timeDisabled?: boolean;
 }) {
   return (
     <View style={styles.formField}>
@@ -3132,7 +3588,11 @@ function DateTimeFormField({
           <Text style={styles.dateFormValueText}>{date}</Text>
           <DownChevron />
         </Pressable>
-        <Pressable onPress={onPressTime} style={({ pressed }) => [styles.dateTimeTimeValue, pressed && styles.pressed]}>
+        <Pressable
+          disabled={timeDisabled}
+          onPress={onPressTime}
+          style={({ pressed }) => [styles.dateTimeTimeValue, timeDisabled && styles.formControlDisabled, pressed && styles.pressed]}
+        >
           <Text style={styles.dateFormValueText}>{time}</Text>
           <DownChevron />
         </Pressable>
@@ -3141,11 +3601,15 @@ function DateTimeFormField({
   );
 }
 
-function NotificationFormField({ value, onPress }: { value: string; onPress: () => void }) {
+function NotificationFormField({ value, onPress, disabled = false }: { value: string; onPress: () => void; disabled?: boolean }) {
   return (
     <View style={styles.formField}>
       <Text style={styles.formLabel}>通知</Text>
-      <Pressable onPress={onPress} style={({ pressed }) => [styles.notificationFormValue, pressed && styles.pressed]}>
+      <Pressable
+        disabled={disabled}
+        onPress={onPress}
+        style={({ pressed }) => [styles.notificationFormValue, disabled && styles.formControlDisabled, pressed && styles.pressed]}
+      >
         <Text style={styles.notificationFormValueText} numberOfLines={1} ellipsizeMode="tail">
           {value}
         </Text>
@@ -3245,6 +3709,15 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     flex: 1,
     backgroundColor: tokens.background,
   },
+  bannerSafeArea: {
+    backgroundColor: tokens.background,
+  },
+  bannerWrap: {
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tokens.background,
+  },
   page: {
     flex: 1,
     backgroundColor: tokens.background,
@@ -3269,6 +3742,12 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     alignItems: 'center',
     justifyContent: 'space-between',
     position: 'relative',
+  },
+  headerBackButton: {
+    width: 52,
+    height: 42,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
   },
   monthTitleButton: {
     minWidth: 120,
@@ -3359,7 +3838,7 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
   weekRow: {
     flexDirection: 'row',
     paddingHorizontal: 30,
-    paddingTop: 34,
+    paddingTop: 20,
   },
   weekday: {
     flex: 1,
@@ -3373,11 +3852,11 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     flexDirection: 'row',
     flexWrap: 'wrap',
     paddingHorizontal: 27,
-    paddingTop: 26,
-    rowGap: 26,
+    paddingTop: 15,
+    rowGap: 20,
   },
   calendarGridCompact: {
-    rowGap: 21,
+    rowGap: 16,
   },
   dateCell: {
     width: `${100 / 7}%`,
@@ -3403,6 +3882,12 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
+  holidayText: {
+    color: '#AA8580',
+  },
+  saturdayText: {
+    color: '#7F949C',
+  },
   scheduleScroll: {
     flex: 1,
   },
@@ -3419,8 +3904,53 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     marginBottom: 28,
   },
   scheduleTimeline: {
+  },
+  scheduleTimedTimeline: {
     gap: scheduleTimelineGroupGap,
     position: 'relative',
+  },
+  scheduleAllDaySectionWithTimeline: {
+    marginBottom: 24,
+  },
+  scheduleAllDayList: {
+    gap: 5,
+  },
+  scheduleAllDayRow: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  scheduleAllDayTimes: {
+    width: 58,
+    justifyContent: 'center',
+  },
+  scheduleAllDayMarker: {
+    width: 40,
+    position: 'relative',
+  },
+  scheduleAllDayDot: {
+    top: '50%',
+    transform: [{ translateY: -4 }],
+  },
+  scheduleAllDayCardSlot: {
+    flex: 1,
+    marginLeft: 18,
+    paddingHorizontal: 3,
+  },
+  scheduleAllDayCard: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 7,
+    backgroundColor: tokens.subtleSurface,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  scheduleAllDayTitle: {
+    color: tokens.text,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '400',
   },
   scheduleTimelineOverlay: {
     position: 'absolute',
@@ -3610,8 +4140,8 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
   },
   settingsRowTitle: {
     color: tokens.text,
-    fontSize: 18,
-    lineHeight: 25,
+    fontSize: 17,
+    lineHeight: 24,
     fontWeight: '400',
   },
   settingsChevron: {
@@ -3621,6 +4151,49 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     lineHeight: 36,
     fontWeight: '200',
     textAlign: 'right',
+  },
+  weekStartScreen: {
+    flex: 1,
+  },
+  weekStartContent: {
+    paddingHorizontal: 30,
+    paddingTop: 42,
+    paddingBottom: 54,
+  },
+  weekStartList: {
+    gap: 4,
+  },
+  weekStartRow: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 18,
+  },
+  weekStartRowTitle: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '400',
+  },
+  weekStartSelection: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: tokens.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekStartSelectionSelected: {
+    backgroundColor: tokens.selected,
+    borderColor: tokens.selected,
+  },
+  weekStartCheck: {
+    color: tokens.text,
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '500',
   },
   themeScreen: {
     flex: 1,
@@ -3802,126 +4375,234 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     flex: 1,
   },
   proContent: {
-    paddingHorizontal: 30,
-    paddingTop: 78,
-    paddingBottom: 44,
+    paddingHorizontal: 20,
+    paddingTop: 28,
+    paddingBottom: 54,
   },
-  proHero: {
-    marginBottom: 58,
+  proIntro: {
+    alignItems: 'center',
+    paddingHorizontal: 12,
   },
-  proHeroTitle: {
+  proHeadline: {
     color: tokens.text,
-    fontSize: 32,
-    lineHeight: 39,
-    fontWeight: '300',
+    fontSize: 19,
+    lineHeight: 26,
+    fontWeight: '500',
+    textAlign: 'center',
   },
-  proFeatureList: {
-    marginBottom: 62,
-  },
-  proFeatureRow: {
-    minHeight: 90,
+  proComparison: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
+    gap: 10,
+    marginTop: 32,
   },
-  proFeatureText: {
+  proPreviewPanel: {
     flex: 1,
-  },
-  proFeatureTitle: {
-    color: tokens.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '400',
-  },
-  proChevron: {
-    width: 24,
-    color: tokens.tertiaryText,
-    fontSize: 32,
-    lineHeight: 34,
-    fontWeight: '200',
-    textAlign: 'right',
-  },
-  proPlanSection: {
-    marginBottom: 64,
-  },
-  proSectionLabel: {
-    color: tokens.tertiaryText,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '400',
-    marginBottom: 18,
-  },
-  proPlanCard: {
+    height: 218,
     borderWidth: 1,
     borderColor: tokens.hairline,
-    borderRadius: 14,
+    borderRadius: 8,
+    backgroundColor: tokens.background,
+    paddingHorizontal: 9,
+    paddingTop: 12,
+    paddingBottom: 10,
     overflow: 'hidden',
-    backgroundColor: tokens.surface,
   },
-  proPlanRow: {
-    minHeight: 66,
-    paddingHorizontal: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  proPlanName: {
+  proPreviewLabel: {
     color: tokens.text,
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: '400',
+    textAlign: 'center',
   },
-  proPlanValue: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 20,
-  },
-  proPlanPrice: {
+  proPreviewDate: {
     color: tokens.text,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '400',
+    marginTop: 12,
+  },
+  proPreviewTimeline: {
+    gap: 4,
+    marginTop: 8,
+  },
+  proPreviewRow: {
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  proPreviewTime: {
+    width: 31,
+    color: tokens.secondaryText,
+    fontSize: 7,
+    lineHeight: 11,
     fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
-  proPlanCheck: {
-    color: tokens.secondaryText,
-    fontSize: 18,
-    lineHeight: 20,
-    fontWeight: '400',
-  },
-  proCancelText: {
-    color: tokens.tertiaryText,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '400',
-    marginTop: 18,
-  },
-  proActions: {
-    gap: 22,
+  proPreviewRail: {
+    width: 15,
     alignItems: 'center',
+    position: 'relative',
   },
-  proStartButton: {
-    height: 58,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: tokens.divider,
+  proPreviewDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: tokens.dot,
+    zIndex: 1,
+  },
+  proPreviewLine: {
+    position: 'absolute',
+    top: 7,
+    bottom: -4,
+    width: 1,
+    backgroundColor: tokens.hairline,
+  },
+  proPreviewTask: {
+    flex: 1,
+    borderRadius: 4,
+    backgroundColor: tokens.surface,
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+  },
+  proPreviewTaskTitle: {
+    color: tokens.text,
+    fontSize: 7,
+    lineHeight: 10,
+    fontWeight: '400',
+  },
+  proPreviewTaskEnd: {
+    color: tokens.tertiaryText,
+    fontSize: 6,
+    lineHeight: 9,
+    fontWeight: '400',
+    marginTop: 2,
+  },
+  proPreviewAd: {
+    position: 'absolute',
+    left: 9,
+    right: 9,
+    top: 168,
+    minHeight: 40,
+    borderRadius: 5,
+    backgroundColor: tokens.surface,
+    padding: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    zIndex: 2,
+  },
+  proPreviewAdMark: {
+    width: 28,
+    height: 28,
+    borderRadius: 5,
+    backgroundColor: tokens.divider,
     alignItems: 'center',
     justifyContent: 'center',
-    alignSelf: 'stretch',
-    backgroundColor: tokens.surface,
   },
-  proStartButtonText: {
+  proPreviewAdMarkText: {
+    color: tokens.background,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: '400',
+  },
+  proPreviewAdCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  proPreviewAdTitle: {
+    color: tokens.text,
+    fontSize: 6,
+    lineHeight: 9,
+    fontWeight: '500',
+  },
+  proPreviewAdBrand: {
+    color: tokens.tertiaryText,
+    fontSize: 6,
+    lineHeight: 9,
+    fontWeight: '400',
+    marginTop: 2,
+  },
+  proPurchasePanel: {
+    minHeight: 96,
+    borderWidth: 1,
+    borderColor: tokens.hairline,
+    borderRadius: 8,
+    backgroundColor: tokens.background,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 34,
+    boxShadow: '0 5px 18px rgba(0, 0, 0, 0.05)',
+  },
+  proPurchasePriceBlock: {
+    width: 105,
+    paddingLeft: 4,
+  },
+  proPurchaseType: {
+    color: tokens.text,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '400',
+  },
+  proPurchasePrice: {
+    color: tokens.text,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '300',
+    fontVariant: ['tabular-nums'],
+    marginTop: 4,
+  },
+  proPurchaseButton: {
+    width: 124,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: tokens.surface,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  proPurchaseButtonText: {
     color: tokens.text,
     fontSize: 16,
     lineHeight: 22,
     fontWeight: '400',
   },
+  proRestoreButton: {
+    minHeight: 44,
+    alignSelf: 'center',
+    justifyContent: 'center',
+    marginTop: 18,
+    paddingHorizontal: 18,
+  },
   proRestoreText: {
-    color: tokens.tertiaryText,
+    color: tokens.secondaryText,
     fontSize: 14,
     lineHeight: 20,
     fontWeight: '400',
+    textDecorationLine: 'underline',
+  },
+  proLegalLinks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 10,
+  },
+  proLegalLinkButton: {
+    minHeight: 30,
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  proLegalLinkText: {
+    color: tokens.secondaryText,
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '400',
+    textDecorationLine: 'underline',
   },
   notificationSettingsScreen: {
     flex: 1,
@@ -4142,6 +4823,26 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
   },
   formField: {
     gap: 8,
+  },
+  allDayFormField: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  allDayFormLabel: {
+    color: tokens.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  allDaySwitchFrame: {
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formControlDisabled: {
+    opacity: 0.32,
   },
   formFieldCompact: {
     flex: 1,

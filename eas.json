@@ -8,17 +8,26 @@
       "developmentClient": true,
       "distribution": "store",
       "credentialsSource": "local",
+      "env": {
+        "EXPO_PUBLIC_BUILD_PROFILE": "development"
+      },
       "ios": {
         "simulator": false
       }
     },
     "preview": {
       "distribution": "internal",
-      "credentialsSource": "local"
+      "credentialsSource": "local",
+      "env": {
+        "EXPO_PUBLIC_BUILD_PROFILE": "preview"
+      }
     },
     "production": {
       "autoIncrement": false,
-      "credentialsSource": "local"
+      "credentialsSource": "local",
+      "env": {
+        "EXPO_PUBLIC_BUILD_PROFILE": "production"
+      }
     }
   },
   "submit": {

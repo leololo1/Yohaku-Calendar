@@ -5,6 +5,7 @@ export type YohakuTodayWidgetEvent = {
   title: string;
   date?: string;
   endDate?: string;
+  allDay?: boolean;
   time: string;
   end?: string;
 };
@@ -15,6 +16,7 @@ export type YohakuTodayWidgetCalendarDay = {
   muted: boolean;
   selected: boolean;
   eventCount: number;
+  weekday?: number;
 };
 
 export type YohakuTodayWidgetProps = {
@@ -25,6 +27,8 @@ export type YohakuTodayWidgetProps = {
   themeSurface?: string;
   themeBorder?: string;
   themeDot?: string;
+  weekStartsOn?: number;
+  holidayWeekdays?: number[];
   calendarDays?: YohakuTodayWidgetCalendarDay[];
   events?: YohakuTodayWidgetEvent[];
   timelineEvents?: YohakuTodayWidgetEvent[];
@@ -55,6 +59,24 @@ const createYohakuWidgetLayout = (
   var themeSurface = props.themeSurface || '#F7F7F5';
   var themeBorder = props.themeBorder || '#E8E8E5';
   var themeDot = props.themeDot || '#D7D7D3';
+  var requestedWeekStart = Number(props.weekStartsOn);
+  var weekStartsOn = Number.isInteger(requestedWeekStart) && requestedWeekStart >= 0 && requestedWeekStart <= 6
+    ? requestedWeekStart
+    : 0;
+  var holidayWeekdays = Array.isArray(props.holidayWeekdays)
+    ? props.holidayWeekdays.filter(function(weekday, index, values) {
+        return Number.isInteger(weekday) && weekday >= 0 && weekday <= 6 && values.indexOf(weekday) === index;
+      })
+    : [0];
+  var allWeekdayLabels = ['\\u65E5', '\\u6708', '\\u706B', '\\u6C34', '\\u6728', '\\u91D1', '\\u571F'];
+  var weekdayIndexes = [0, 1, 2, 3, 4, 5, 6].map(function(index) {
+    return (weekStartsOn + index) % 7;
+  });
+  var weekdayLabels = weekdayIndexes.map(function(index) {
+    return allWeekdayLabels[index];
+  });
+  var sundayColor = '#AA8580';
+  var saturdayColor = '#7F949C';
   var isSmall = environment && environment.widgetFamily === 'systemSmall';
   var isMedium = environment && environment.widgetFamily === 'systemMedium';
   var isLarge = environment && environment.widgetFamily === 'systemLarge';
@@ -73,6 +95,24 @@ const createYohakuWidgetLayout = (
       return '#858581';
     }
     return '#222222';
+  }
+
+  function calendarDateColorForEventCount(weekdayIndex, eventCount) {
+    var isHoliday = holidayWeekdays.indexOf(weekdayIndex) !== -1;
+    if (!isHoliday && weekdayIndex !== 6) {
+      return null;
+    }
+    var colors = isHoliday
+      ? ['#E0D4D2', '#927C79', '#271F1E']
+      : ['#D2DCDF', '#77898F', '#1D2427'];
+
+    if (eventCount === 0) {
+      return colors[0];
+    }
+    if (eventCount === 1) {
+      return colors[1];
+    }
+    return colors[2];
   }
 
   function lockDateStyleForEventCount(eventCount) {
@@ -254,7 +294,13 @@ const createYohakuWidgetLayout = (
   }
 
   function renderEventList(maxRows, compact) {
-    var rows = events.slice(0, maxRows);
+    var allDayRows = timelineEvents.filter(function(event) {
+      return event && event.allDay === true;
+    });
+    var timedRows = timelineEvents.filter(function(event) {
+      return !event || event.allDay !== true;
+    });
+    var rows = allDayRows.concat(timedRows).slice(0, maxRows);
     var compactListHeight = 136;
     var compactHeaderHeight = 18;
     var compactListSpacing = 4;
@@ -268,7 +314,8 @@ const createYohakuWidgetLayout = (
     if (compact) {
       headerModifiers.push(
         lineLimit(1),
-        frame({ width: 118, height: compactHeaderHeight, alignment: 'topLeading' })
+        frame({ height: compactHeaderHeight, alignment: 'topLeading' }),
+        containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
       );
     } else {
       headerModifiers.push(containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' }));
@@ -282,10 +329,21 @@ const createYohakuWidgetLayout = (
     ];
 
     if (rows.length === 0) {
+      var emptyTextModifiers = [
+        font({ size: compact ? 12 : 14, weight: 'regular' }),
+        foregroundStyle('#AAAAAA'),
+        multilineTextAlignment('leading')
+      ];
+      if (compact) {
+        emptyTextModifiers.push(
+          lineLimit(2),
+          containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
+        );
+      }
       children.push(
         _jsx(Text, {
-          modifiers: [font({ size: compact ? 12 : 14, weight: 'regular' }), foregroundStyle('#AAAAAA')],
-          children: '\\u4E88\\u5B9A\\u306F\\u3042\\u308A\\u307E\\u305B\\u3093'
+          modifiers: emptyTextModifiers,
+          children: '\\u3053\\u306E\\u5F8C\\u4E88\\u5B9A\\u306F\\u3042\\u308A\\u307E\\u305B\\u3093'
         })
       );
     } else {
@@ -295,7 +353,10 @@ const createYohakuWidgetLayout = (
             spacing: compact ? 8 : 18,
             alignment: 'center',
             modifiers: compact
-              ? [frame({ width: 118, height: compactRowHeight, alignment: 'leading' })]
+              ? [
+                  frame({ height: compactRowHeight, alignment: 'leading' }),
+                  containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
+                ]
               : [
                   padding({ top: 5, bottom: 5 }),
                   containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
@@ -307,7 +368,7 @@ const createYohakuWidgetLayout = (
                   foregroundStyle('#555555'),
                   frame({ width: compact ? 34 : 54, alignment: 'leading' })
                 ],
-                children: event.time || ''
+                children: event.allDay ? '\\u7D42\\u65E5' : event.time || ''
               }),
               _jsx(Text, {
                 modifiers: [
@@ -326,7 +387,10 @@ const createYohakuWidgetLayout = (
     }
 
     var listModifiers = compact
-      ? [frame({ width: 118, height: compactListHeight, alignment: 'topLeading' })]
+      ? [
+          frame({ height: compactListHeight, alignment: 'topLeading' }),
+          containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })
+        ]
       : [
           padding({ top: 18, bottom: 16, leading: 18, trailing: 18 }),
           containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
@@ -346,7 +410,6 @@ const createYohakuWidgetLayout = (
       : size === 'small'
         ? { width: 136, height: 132, cell: 18, title: 15, weekday: 9, day: 11, rowSpacing4: 6, rowSpacing5: 3, rowSpacing6: 1, columnSpacing: 1 }
         : { width: 160, height: 124, outerHeight: 136, cell: 19, title: 14, titleHeight: 18, weekday: 9, day: 12, rowSpacing4: 7, rowSpacing5: 1, rowSpacing6: 0, columnSpacing: 3 };
-    var weekdayLabels = ['\\u65E5', '\\u6708', '\\u706B', '\\u6C34', '\\u6728', '\\u91D1', '\\u571F'];
     var children = [];
     var activeWeekStarts = [];
     var weekStart;
@@ -402,11 +465,17 @@ const createYohakuWidgetLayout = (
       _jsx(HStack, {
         spacing: config.columnSpacing,
         modifiers: [containerRelativeFrame({ axes: 'horizontal', alignment: 'leading' })],
-        children: weekdayLabels.map(function(label) {
+        children: weekdayLabels.map(function(label, weekdayPosition) {
+          var weekdayIndex = weekdayIndexes[weekdayPosition];
+          var weekdayColor = holidayWeekdays.indexOf(weekdayIndex) !== -1
+            ? sundayColor
+            : weekdayIndex === 6
+              ? saturdayColor
+              : '#AAAAAA';
           return _jsx(Text, {
             modifiers: [
               font({ size: config.weekday, weight: 'regular' }),
-              foregroundStyle('#AAAAAA'),
+              foregroundStyle(weekdayColor),
               frame({ width: config.cell, alignment: 'center' })
             ],
             children: label
@@ -423,7 +492,9 @@ const createYohakuWidgetLayout = (
           children: [0, 1, 2, 3, 4, 5, 6].map(function(offset) {
             var day = calendarDays[weekStart + offset] || {};
             var hidden = !day.label || day.muted;
-            var color = hidden ? '#FFFFFF' : dateColorForEventCount(day.eventCount || 0);
+            var dayWeekday = Number.isInteger(day.weekday) ? day.weekday : weekdayIndexes[offset];
+            var calendarDateColor = calendarDateColorForEventCount(dayWeekday, day.eventCount || 0);
+            var color = hidden ? '#FFFFFF' : calendarDateColor || dateColorForEventCount(day.eventCount || 0);
             var dayChildren = [];
 
             if (!hidden && day.selected) {
@@ -437,14 +508,16 @@ const createYohakuWidgetLayout = (
               );
             }
 
+            var dateTextModifiers = [
+              font({ size: config.day, weight: 'regular' }),
+              foregroundStyle(color),
+              frame({ width: config.cell, height: config.cell, alignment: 'center' }),
+              lineLimit(1)
+            ];
+
             dayChildren.push(
               _jsx(Text, {
-                modifiers: [
-                  font({ size: config.day, weight: 'regular' }),
-                  foregroundStyle(color),
-                  frame({ width: config.cell, height: config.cell, alignment: 'center' }),
-                  lineLimit(1)
-                ],
+                modifiers: dateTextModifiers,
                 children: hidden ? '' : day.label
               })
             );
@@ -548,8 +621,8 @@ const createYohakuWidgetLayout = (
     }
 
     return rows.map(function(event) {
-      var timeLabel = event.time || '';
-      if (showEnd && event.end) {
+      var timeLabel = event.allDay ? '\u7D42\u65E5' : event.time || '';
+      if (!event.allDay && showEnd && event.end) {
         timeLabel += '~' + event.end;
       }
 
@@ -592,7 +665,6 @@ const createYohakuWidgetLayout = (
   }
 
   function renderLockCalendar() {
-    var weekdayLabels = ['\u65E5', '\u6708', '\u706B', '\u6C34', '\u6728', '\u91D1', '\u571F'];
     var weekStarts = [];
     var weekStart;
     var offset;
@@ -619,11 +691,17 @@ const createYohakuWidgetLayout = (
       _jsx(HStack, {
         spacing: 4,
         modifiers: [frame({ width: 150, height: 8, alignment: 'leading' })],
-        children: weekdayLabels.map(function(label) {
+        children: weekdayLabels.map(function(label, weekdayPosition) {
+          var weekdayIndex = weekdayIndexes[weekdayPosition];
+          var weekdayStyle = holidayWeekdays.indexOf(weekdayIndex) !== -1
+            ? sundayColor
+            : weekdayIndex === 6
+              ? saturdayColor
+              : { type: 'hierarchical', style: 'secondary' };
           return _jsx(Text, {
             modifiers: [
               font({ size: 6, weight: 'medium' }),
-              foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
+              foregroundStyle(weekdayStyle),
               frame({ width: 18, height: 8, alignment: 'center' }),
               lineLimit(1)
             ],
@@ -641,16 +719,23 @@ const createYohakuWidgetLayout = (
           children: [0, 1, 2, 3, 4, 5, 6].map(function(dayOffset) {
             var day = calendarDays[start + dayOffset] || {};
             var hidden = !day.label || day.muted;
+            var eventCount = day.eventCount || 0;
+            var dayWeekday = Number.isInteger(day.weekday) ? day.weekday : weekdayIndexes[dayOffset];
+            var calendarDateColor = eventCount > 0
+              ? calendarDateColorForEventCount(dayWeekday, eventCount)
+              : null;
             var dayChildren = [];
+
+            var lockDateModifiers = [
+              font({ size: 7, weight: 'medium' }),
+              foregroundStyle(calendarDateColor || lockDateStyleForEventCount(eventCount)),
+              frame({ width: 18, height: 8, alignment: 'center' }),
+              lineLimit(1)
+            ];
 
             dayChildren.push(
               _jsx(Text, {
-                modifiers: [
-                  font({ size: 7, weight: 'medium' }),
-                  foregroundStyle(lockDateStyleForEventCount(day.eventCount || 0)),
-                  frame({ width: 18, height: 8, alignment: 'center' }),
-                  lineLimit(1)
-                ],
+                modifiers: lockDateModifiers,
                 children: hidden ? '' : day.label
               })
             );
@@ -698,7 +783,13 @@ const createYohakuWidgetLayout = (
       });
     }
 
-    var groups = buildTimelineGroups(timelineEvents, currentDateKey);
+    var allDayEvents = timelineEvents.filter(function(event) {
+      return event && event.allDay === true;
+    });
+    var timedEvents = timelineEvents.filter(function(event) {
+      return !event || event.allDay !== true;
+    });
+    var groups = buildTimelineGroups(timedEvents, currentDateKey);
     var fillContainer = fill !== false;
     var tightCards = compact || !fillContainer;
     var railWidth = compact ? 72 : 72;
@@ -706,14 +797,25 @@ const createYohakuWidgetLayout = (
     var cardGap = compact ? 5 : 6;
     var fullCardWidth = compact ? largeContentWidth - railWidth - 12 : 232;
     var timelineContentWidth = railWidth + 12 + fullCardWidth;
-    var timelineHeight = compact ? 140 : 167;
+    var timelineHeight = compact ? 152 : 183;
     var titleSize = compact ? 12 : 13;
     var endSize = compact ? 10 : 11;
     var dateSize = 14;
     var timeSize = compact ? 12 : 12;
     var titleBlockHeight = 21;
     var titleGap = compact ? 4 : 5;
-    var timelineAreaHeight = Math.max(1, timelineHeight - titleBlockHeight - titleGap);
+    var contentAreaHeight = Math.max(1, timelineHeight - titleBlockHeight - titleGap);
+    var allDayRowHeight = compact ? 22 : 24;
+    var allDayRowGap = 3;
+    var allDaySlotCount = groups.length > 0 ? 2 : 4;
+    var visibleAllDayCount = Math.min(allDayEvents.length, allDaySlotCount);
+    var allDayBlockHeight = visibleAllDayCount > 0
+      ? visibleAllDayCount * allDayRowHeight + Math.max(0, visibleAllDayCount - 1) * allDayRowGap
+      : 0;
+    var timelineAreaHeight = Math.max(
+      1,
+      contentAreaHeight - (allDayBlockHeight > 0 && groups.length > 0 ? allDayBlockHeight + titleGap : allDayBlockHeight)
+    );
     var baseHourHeight = compact ? 38 : 41;
     var availableRowHeight = Math.max(0, timelineAreaHeight - Math.max(0, groups.length - 1) * cardGap);
     var naturalRowHeights = groups.map(function(group) {
@@ -738,7 +840,7 @@ const createYohakuWidgetLayout = (
         ]
       : [frame({ width: timelineContentWidth, height: timelineHeight, alignment: 'topLeading' })];
 
-    if (groups.length === 0) {
+    if (groups.length === 0 && allDayEvents.length === 0) {
       return _jsxs(VStack, {
         alignment: 'leading',
         spacing: 10,
@@ -750,10 +852,76 @@ const createYohakuWidgetLayout = (
           }),
           _jsx(Text, {
             modifiers: [font({ size: compact ? 13 : 14, weight: 'regular' }), foregroundStyle('#AAAAAA')],
-            children: '\\u4E88\\u5B9A\\u306F\\u3042\\u308A\\u307E\\u305B\\u3093'
+            children: '\\u3053\\u306E\\u5F8C\\u4E88\\u5B9A\\u306F\\u3042\\u308A\\u307E\\u305B\\u3093'
           })
         ]
       });
+    }
+
+    var allDayRows = [];
+    if (allDayEvents.length > 0) {
+      var allDayVisibleEvents = allDayEvents.length > allDaySlotCount
+        ? allDayEvents.slice(0, Math.max(0, allDaySlotCount - 1))
+        : allDayEvents.slice(0, allDaySlotCount);
+
+      function renderAllDayRow(title, rowIndex, muted) {
+        return _jsxs(HStack, {
+          alignment: 'center',
+          spacing: 12,
+          modifiers: [frame({ width: timelineContentWidth, height: allDayRowHeight, alignment: 'leading' })],
+          children: [
+            _jsxs(HStack, {
+              alignment: 'center',
+              spacing: 6,
+              modifiers: [frame({ width: railWidth, height: allDayRowHeight, alignment: 'leading' })],
+              children: [
+                _jsx(Text, {
+                  modifiers: [
+                    font({ size: timeSize, weight: 'regular' }),
+                    foregroundStyle('#666666'),
+                    lineLimit(1),
+                    frame({ width: timeWidth, height: allDayRowHeight, alignment: 'leading' })
+                  ],
+                  children: rowIndex === 0 ? '\\u7D42\\u65E5' : ''
+                }),
+                _jsx(ZStack, {
+                  alignment: 'center',
+                  modifiers: [frame({ width: 12, height: allDayRowHeight, alignment: 'center' })],
+                  children: _jsx(Circle, {
+                    modifiers: [foregroundStyle(themeDot), frame({ width: 7, height: 7 })]
+                  })
+                })
+              ]
+            }),
+            _jsx(Text, {
+              modifiers: [
+                font({ size: muted ? (compact ? 10 : 11) : (compact ? 11 : 12), weight: 'regular' }),
+                foregroundStyle(muted ? '#777777' : '#222222'),
+                lineLimit(1),
+                padding({ leading: 8, trailing: 8 }),
+                frame({ width: fullCardWidth, height: allDayRowHeight, alignment: 'leading' }),
+                background(themeSurface),
+                cornerRadius(6)
+              ],
+              children: title
+            })
+          ]
+        });
+      }
+
+      allDayVisibleEvents.forEach(function(event, index) {
+        allDayRows.push(renderAllDayRow(event.title || '', index, false));
+      });
+
+      if (allDayEvents.length > allDaySlotCount) {
+        allDayRows.push(
+          renderAllDayRow(
+            '\\u4ED6' + String(allDayEvents.length - Math.max(0, allDaySlotCount - 1)) + '\\u4EF6',
+            allDayRows.length,
+            true
+          )
+        );
+      }
     }
 
     var timelineRows = groups.map(function(group, groupIndex) {
@@ -879,27 +1047,44 @@ const createYohakuWidgetLayout = (
       });
     });
 
-    return _jsxs(VStack, {
-      alignment: 'leading',
-      spacing: titleGap,
-      modifiers: outerModifiers,
-      children: [
-        _jsx(Text, {
-          modifiers: [
-            font({ size: dateSize, weight: 'regular' }),
-            foregroundStyle('#222222'),
-            frame({ height: titleBlockHeight, alignment: 'topLeading' })
-          ],
-          children: dateLabel
-        }),
+    var timelineChildren = [
+      _jsx(Text, {
+        modifiers: [
+          font({ size: dateSize, weight: 'regular' }),
+          foregroundStyle('#222222'),
+          frame({ height: titleBlockHeight, alignment: 'topLeading' })
+        ],
+        children: dateLabel
+      })
+    ];
+
+    if (allDayRows.length > 0) {
+      timelineChildren.push(
+        _jsx(VStack, {
+          alignment: 'leading',
+          spacing: allDayRowGap,
+          modifiers: [frame({ width: timelineContentWidth, height: allDayBlockHeight, alignment: 'topLeading' })],
+          children: allDayRows
+        })
+      );
+    }
+
+    if (groups.length > 0) {
+      timelineChildren.push(
         _jsx(VStack, {
           alignment: 'leading',
           spacing: cardGap,
           modifiers: [frame({ width: timelineContentWidth, height: timelineAreaHeight, alignment: 'topLeading' })],
           children: timelineRows
-        }),
-        _jsx(Spacer, {})
-      ]
+        })
+      );
+    }
+
+    return _jsx(VStack, {
+      alignment: 'leading',
+      spacing: titleGap,
+      modifiers: outerModifiers,
+      children: timelineChildren
     });
   }
 
@@ -944,7 +1129,7 @@ const createYohakuWidgetLayout = (
       alignment: 'center',
       spacing: 6,
       modifiers: [
-        padding({ top: 12, bottom: 12, leading: 18, trailing: 18 })
+        padding({ top: 4, bottom: 4, leading: 18, trailing: 18 })
       ],
       children: [
         renderCalendar('large'),
@@ -958,13 +1143,12 @@ const createYohakuWidgetLayout = (
       alignment: 'center',
       spacing: 12,
       modifiers: [
-        padding({ top: 12, bottom: 12, leading: 18, trailing: 12 }),
+        padding({ top: 12, bottom: 4, leading: 18, trailing: 18 }),
         containerRelativeFrame({ axes: 'both', alignment: 'topLeading' })
       ],
       children: [
         renderCalendar('medium'),
-        renderEventList(3, true),
-        _jsx(Spacer, {})
+        renderEventList(3, true)
       ]
     }), 'leading', 'topLeading');
   }
@@ -1020,6 +1204,8 @@ const initialWidgetProps: YohakuTodayWidgetProps = {
   themeSurface: '#F7F7F5',
   themeBorder: '#E8E8E5',
   themeDot: '#D7D7D3',
+  weekStartsOn: 0,
+  holidayWeekdays: [0],
   calendarDays: [],
   events: [],
   timelineEvents: [],
