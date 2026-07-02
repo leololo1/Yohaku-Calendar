@@ -6,6 +6,20 @@ import {
   requestTrackingPermissionsAsync,
 } from 'expo-tracking-transparency';
 import * as WebBrowser from 'expo-web-browser';
+import {
+  ErrorCode,
+  endConnection,
+  fetchProducts,
+  finishTransaction,
+  getAvailablePurchases,
+  initConnection,
+  isTransactionVerifiedIOS,
+  purchaseErrorListener,
+  purchaseUpdatedListener,
+  requestPurchase,
+  syncIOS,
+  type Product,
+} from 'expo-iap';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { StatusBar } from 'expo-status-bar';
 import { CloudStorage } from 'react-native-cloud-storage';
@@ -38,6 +52,7 @@ import {
 
 type CalendarMode = 'month';
 type ViewMode = CalendarMode | 'form' | 'pro' | 'weekStart' | 'holidayWeekdays' | 'notificationSettings' | 'theme' | 'backup';
+type SettingsDetailMode = Exclude<ViewMode, CalendarMode | 'form'>;
 type FormMode = 'add' | 'edit';
 type WeekStart = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 type NotificationOption = 'none' | 'atStart' | 'before3' | 'before5' | 'before10' | 'before30' | 'before60';
@@ -104,6 +119,9 @@ type BackupPayload = {
   exportedAt: string;
   events: CalendarEvent[];
   notificationSettings: NotificationSettings;
+  themeId: string;
+  weekStartsOn: WeekStart;
+  holidayWeekdays: WeekStart[];
 };
 
 type ScheduleTimelineEntry = {
@@ -130,6 +148,8 @@ const appStoreReviewUrl = `itms-apps://itunes.apple.com/app/id${appStoreAppId}?a
 const appStoreReviewFallbackUrl = `${appStoreShareUrl}?action=write-review`;
 const appleStandardEulaUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
 const productionBannerAdUnitId = 'ca-app-pub-6757694633642168/2928519428';
+const adsEnabled = true;
+const removeAdsProductId = 'yohaku_remove_ads';
 const isProductionBuild = process.env.EXPO_PUBLIC_BUILD_PROFILE === 'production';
 const pickerColumnHeight = 224;
 const pickerItemHeight = 38;
@@ -204,6 +224,7 @@ const backupLastBackupAtStorageKey = 'yohaku-calendar-backup-last-at';
 const themeStorageKey = 'yohaku-calendar-theme';
 const weekStartStorageKey = 'yohaku-calendar-week-start';
 const holidayWeekdaysStorageKey = 'yohaku-calendar-holiday-weekdays';
+const adFreePurchaseStorageKey = 'yohaku-calendar-ad-free-purchased';
 const iCloudBackupDirectory = '/yohaku-calendar';
 const iCloudBackupPath = `${iCloudBackupDirectory}/backup.json`;
 const notificationIdentifierPrefix = 'yohaku-calendar-event-';
@@ -763,11 +784,25 @@ const parseBackupPayload = (rawBackup: string): BackupPayload | null => {
       return null;
     }
 
+    const parsedWeekStartsOn = parsed.weekStartsOn;
+    const parsedHolidayWeekdays: WeekStart[] = Array.isArray(parsed.holidayWeekdays)
+      ? Array.from(new Set(parsed.holidayWeekdays.filter((weekday) => Number.isInteger(weekday) && weekday >= 0 && weekday <= 6))) as WeekStart[]
+      : [0];
+
     return {
       version: 1,
       exportedAt: parsed.exportedAt,
       events: parsed.events.map(normalizeBackupEvent).filter((event): event is CalendarEvent => event !== null),
       notificationSettings: normalizeBackupNotificationSettings(parsed.notificationSettings),
+      themeId:
+        typeof parsed.themeId === 'string' && themePalettes.some((theme) => theme.id === parsed.themeId)
+          ? parsed.themeId
+          : defaultTheme.id,
+      weekStartsOn:
+        Number.isInteger(parsedWeekStartsOn) && parsedWeekStartsOn !== undefined && parsedWeekStartsOn >= 0 && parsedWeekStartsOn <= 6
+          ? parsedWeekStartsOn as WeekStart
+          : 0,
+      holidayWeekdays: parsedHolidayWeekdays,
     };
   } catch {
     return null;
@@ -967,6 +1002,7 @@ function YohakuCalendarApp() {
   const [weekStartsOn, setWeekStartsOn] = useState<WeekStart>(0);
   const [holidayWeekdays, setHolidayWeekdays] = useState<WeekStart[]>([0]);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+  const [autoBackupRequestVersion, setAutoBackupRequestVersion] = useState(0);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
@@ -977,14 +1013,25 @@ function YohakuCalendarApp() {
   const [notificationPickerVisible, setNotificationPickerVisible] = useState(false);
   const [isAdsReady, setIsAdsReady] = useState(false);
   const [requestNonPersonalizedAdsOnly, setRequestNonPersonalizedAdsOnly] = useState(true);
+  const [isAdFree, setIsAdFree] = useState(() => localStorage.getItem(adFreePurchaseStorageKey) === 'true');
+  const [purchaseStatusReady, setPurchaseStatusReady] = useState(false);
+  const [iapConnected, setIapConnected] = useState(false);
+  const [iapProduct, setIapProduct] = useState<Product | null>(null);
+  const [iapBusy, setIapBusy] = useState(false);
+  const [settingsPageClosing, setSettingsPageClosing] = useState(false);
+  const [settingsPageTranslateY] = useState(() => new Animated.Value(0));
   const [previousCalendarState, setPreviousCalendarState] = useState<CalendarRenderState | null>(null);
   const [calendarTransitionFade] = useState(() => new Animated.Value(1));
   const autoBackupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoBackupEventsRef = useRef<CalendarEvent[]>(initialEvents);
   const pendingSettingsActionRef = useRef<(() => void) | null>(null);
   const pendingSettingsActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoringBackupRef = useRef(false);
-  const { width } = useWindowDimensions();
+  const settingsPageClosingRef = useRef(false);
+  const { width, height } = useWindowDimensions();
   const compact = width < 380;
+  const settingsDetailVisible = mode !== 'month' && mode !== 'form';
+  const settingsPageLayerActive = settingsDetailVisible || settingsPageClosing;
   const bannerUnitId = isProductionBuild ? productionBannerAdUnitId : TestIds.BANNER;
   const activeTheme = useMemo(
     () => themePalettes.find((theme) => theme.id === selectedThemeId) ?? defaultTheme,
@@ -995,7 +1042,116 @@ function YohakuCalendarApp() {
   tokens = activeTokens;
   styles = activeStyles;
 
+  const requestAutoBackup = () => {
+    setAutoBackupRequestVersion((current) => current + 1);
+  };
+
   useEffect(() => {
+    if (!settingsDetailVisible) {
+      settingsPageTranslateY.setValue(0);
+
+      if (settingsPageClosing) {
+        const timer = setTimeout(() => {
+          setSettingsPageClosing(false);
+          settingsPageClosingRef.current = false;
+        }, 34);
+        return () => clearTimeout(timer);
+      }
+
+      settingsPageClosingRef.current = false;
+    }
+  }, [settingsDetailVisible, settingsPageClosing, settingsPageTranslateY]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const setAdFreeEntitlement = (purchased: boolean) => {
+      localStorage.setItem(adFreePurchaseStorageKey, String(purchased));
+      if (!cancelled) {
+        setIsAdFree(purchased);
+      }
+    };
+
+    const purchaseSubscription = purchaseUpdatedListener(async (purchase) => {
+      if (purchase.productId !== removeAdsProductId) return;
+
+      try {
+        const verified = process.env.EXPO_OS !== 'ios' || await isTransactionVerifiedIOS(removeAdsProductId);
+        if (!verified) {
+          throw new Error('StoreKit transaction verification failed');
+        }
+
+        setAdFreeEntitlement(true);
+        await finishTransaction({ purchase, isConsumable: false });
+        if (!cancelled) {
+          setIapBusy(false);
+          Alert.alert('購入完了', '広告を非表示にしました。');
+        }
+      } catch (error) {
+        console.warn('Failed to complete remove-ads purchase', error);
+        if (!cancelled) {
+          setIapBusy(false);
+          Alert.alert('購入エラー', '購入情報を確認できませんでした。時間をおいて再度お試しください。');
+        }
+      }
+    });
+
+    const purchaseErrorSubscription = purchaseErrorListener((error) => {
+      if (cancelled) return;
+      setIapBusy(false);
+      if (error.code === ErrorCode.DeferredPayment) {
+        Alert.alert('承認待ち', '購入は承認待ちです。承認後に自動的に広告が非表示になります。');
+      } else if (error.code !== ErrorCode.UserCancelled) {
+        Alert.alert('購入エラー', '購入を完了できませんでした。時間をおいて再度お試しください。');
+      }
+    });
+
+    const initializeIap = async () => {
+      try {
+        const connected = await initConnection();
+        if (!connected) {
+          throw new Error('StoreKit connection failed');
+        }
+        if (!cancelled) {
+          setIapConnected(true);
+        }
+
+        const [products, purchases] = await Promise.all([
+          fetchProducts({ skus: [removeAdsProductId], type: 'in-app' }),
+          getAvailablePurchases({ onlyIncludeActiveItemsIOS: true }),
+        ]);
+        const product = (products as Product[]).find((item) => item.id === removeAdsProductId) ?? null;
+        const hasEntitlement = purchases.some((purchase) => purchase.productId === removeAdsProductId);
+
+        if (!cancelled) {
+          setIapProduct(product);
+          setAdFreeEntitlement(hasEntitlement);
+        }
+      } catch (error) {
+        console.warn('Failed to initialize in-app purchases', error);
+      } finally {
+        if (!cancelled) {
+          setPurchaseStatusReady(true);
+        }
+      }
+    };
+
+    void initializeIap();
+
+    return () => {
+      cancelled = true;
+      purchaseSubscription.remove();
+      purchaseErrorSubscription.remove();
+      void endConnection().catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!adsEnabled || !purchaseStatusReady || isAdFree) {
+      setIsAdsReady(false);
+      return;
+    }
+
     let cancelled = false;
 
     const initializeAds = async () => {
@@ -1048,7 +1204,7 @@ function YohakuCalendarApp() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAdFree, purchaseStatusReady]);
 
   useEffect(() => {
     const savedEvents = localStorage.getItem(eventStorageKey);
@@ -1064,7 +1220,9 @@ function YohakuCalendarApp() {
       try {
         const parsedEvents = JSON.parse(savedEvents) as CalendarEvent[];
         if (Array.isArray(parsedEvents)) {
-          setEvents(sortEvents(parsedEvents));
+          const sortedEvents = sortEvents(parsedEvents);
+          autoBackupEventsRef.current = sortedEvents;
+          setEvents(sortedEvents);
           setSelectedEventId(parsedEvents[0]?.id ?? '');
         }
       } catch {
@@ -1316,12 +1474,37 @@ function YohakuCalendarApp() {
       return;
     }
 
-    if (mode === 'pro' || mode === 'weekStart' || mode === 'holidayWeekdays' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup') {
-      setMode('month');
+    if (settingsDetailVisible) {
+      if (settingsPageClosingRef.current) return;
+      settingsPageClosingRef.current = true;
+      setSettingsPageClosing(true);
+      Animated.timing(settingsPageTranslateY, {
+        toValue: height,
+        duration: 260,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setMode('month');
+          return;
+        }
+
+        settingsPageClosingRef.current = false;
+        setSettingsPageClosing(false);
+      });
       return;
     }
 
     setMode('month');
+  };
+
+  const openSettingsDetail = (nextMode: SettingsDetailMode) => {
+    settingsPageTranslateY.stopAnimation();
+    settingsPageTranslateY.setValue(0);
+    settingsPageClosingRef.current = false;
+    setSettingsPageClosing(false);
+    setSettingsVisible(false);
+    setMode(nextMode);
   };
 
   const saveEvent = () => {
@@ -1367,13 +1550,12 @@ function YohakuCalendarApp() {
       startNotifications: draft.allDay ? ['none'] : normalizeNotifications(draft.startNotifications),
     };
 
-    setEvents((current) => {
-      if (formMode === 'add') {
-        return sortEvents([...current, savedEvent]);
-      }
-
-      return sortEvents(current.map((event) => (event.id === selectedEventId ? savedEvent : event)));
-    });
+    const nextEvents = formMode === 'add'
+      ? sortEvents([...events, savedEvent])
+      : sortEvents(events.map((event) => (event.id === selectedEventId ? savedEvent : event)));
+    autoBackupEventsRef.current = nextEvents;
+    setEvents(nextEvents);
+    requestAutoBackup();
     setSelectedDate(savedEvent.date);
     setVisibleMonth(new Date(parseDateKey(savedEvent.date).getFullYear(), parseDateKey(savedEvent.date).getMonth(), 1));
     setSelectedEventId(savedEvent.id);
@@ -1444,10 +1626,17 @@ function YohakuCalendarApp() {
         events,
       }
     : null;
+  const homeCalendarState: CalendarRenderState = {
+    mode: 'month',
+    selectedDate,
+    visibleMonth,
+    events,
+  };
 
   const changeEventNotificationsEnabled = async (enabled: boolean) => {
     if (!enabled) {
       setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: false }));
+      requestAutoBackup();
       return;
     }
 
@@ -1458,10 +1647,12 @@ function YohakuCalendarApp() {
     }
 
     setNotificationSettings((current) => ({ ...current, eventNotificationsEnabled: true }));
+    requestAutoBackup();
   };
 
   const changeNotificationSoundEnabled = (enabled: boolean) => {
     setNotificationSettings((current) => ({ ...current, soundEnabled: enabled }));
+    requestAutoBackup();
   };
 
   const testNotification = () => {
@@ -1470,7 +1661,7 @@ function YohakuCalendarApp() {
     });
   };
 
-  const runBackupToICloud = async (showAlert = true) => {
+  const runBackupToICloud = async (showAlert = true, eventsToBackup = events) => {
     if (backupBusy) {
       return false;
     }
@@ -1488,8 +1679,11 @@ function YohakuCalendarApp() {
       const payload: BackupPayload = {
         version: 1,
         exportedAt: new Date().toISOString(),
-        events: sortEvents(events),
+        events: sortEvents(eventsToBackup),
         notificationSettings,
+        themeId: selectedThemeId,
+        weekStartsOn,
+        holidayWeekdays,
       };
       const payloadText = JSON.stringify(payload);
 
@@ -1526,6 +1720,9 @@ function YohakuCalendarApp() {
 
   const changeAutoBackupEnabled = (enabled: boolean) => {
     setAutoBackupEnabled(enabled);
+    if (enabled) {
+      requestAutoBackup();
+    }
   };
 
   const restoreBackupFromICloud = async () => {
@@ -1565,8 +1762,12 @@ function YohakuCalendarApp() {
             }
 
             const restoredEvents = sortEvents(backup.events);
+            autoBackupEventsRef.current = restoredEvents;
             setEvents(restoredEvents);
             setNotificationSettings(backup.notificationSettings);
+            setSelectedThemeId(backup.themeId);
+            setWeekStartsOn(backup.weekStartsOn);
+            setHolidayWeekdays(backup.holidayWeekdays);
             setSelectedEventId(restoredEvents[0]?.id ?? '');
             const nextSelectedDate = restoredEvents[0]?.date ?? toDateKey(new Date());
             setSelectedDate(nextSelectedDate);
@@ -1593,7 +1794,7 @@ function YohakuCalendarApp() {
   };
 
   useEffect(() => {
-    if (!storageReady || !autoBackupEnabled || restoringBackupRef.current) {
+    if (!storageReady || !autoBackupEnabled || autoBackupRequestVersion === 0 || restoringBackupRef.current) {
       return;
     }
 
@@ -1602,7 +1803,7 @@ function YohakuCalendarApp() {
     }
 
     autoBackupTimerRef.current = setTimeout(() => {
-      runBackupToICloud(false).catch(() => {
+      runBackupToICloud(false, autoBackupEventsRef.current).catch(() => {
         // Manual backup reports errors; automatic backup stays quiet.
       });
     }, 1500);
@@ -1613,7 +1814,7 @@ function YohakuCalendarApp() {
         autoBackupTimerRef.current = null;
       }
     };
-  }, [autoBackupEnabled, events, notificationSettings, storageReady]);
+  }, [autoBackupEnabled, autoBackupRequestVersion, storageReady]);
 
   const runPendingSettingsAction = () => {
     const action = pendingSettingsActionRef.current;
@@ -1674,9 +1875,68 @@ function YohakuCalendarApp() {
     });
   };
 
+  const purchaseAdRemoval = async () => {
+    if (isAdFree) {
+      Alert.alert('購入済み', '広告はすでに非表示になっています。');
+      return;
+    }
+    if (!iapConnected || !iapProduct) {
+      Alert.alert('購入情報を取得できません', 'App Storeに接続してから再度お試しください。');
+      return;
+    }
+
+    setIapBusy(true);
+    try {
+      await requestPurchase({
+        request: {
+          apple: { sku: removeAdsProductId },
+          google: { skus: [removeAdsProductId] },
+        },
+        type: 'in-app',
+      });
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: string }).code : undefined;
+      setIapBusy(false);
+      if (code !== ErrorCode.UserCancelled) {
+        Alert.alert('購入エラー', '購入を開始できませんでした。時間をおいて再度お試しください。');
+      }
+    }
+  };
+
+  const restoreAdRemoval = async () => {
+    if (!iapConnected) {
+      Alert.alert('購入情報を取得できません', 'App Storeに接続してから再度お試しください。');
+      return;
+    }
+
+    setIapBusy(true);
+    try {
+      if (process.env.EXPO_OS === 'ios') {
+        await syncIOS();
+      }
+      const purchases = await getAvailablePurchases({ onlyIncludeActiveItemsIOS: true });
+      const purchased = purchases.some((purchase) => purchase.productId === removeAdsProductId);
+      const verified = purchased && (process.env.EXPO_OS !== 'ios' || await isTransactionVerifiedIOS(removeAdsProductId));
+
+      if (!verified) {
+        Alert.alert('購入履歴がありません', '復元できる広告非表示の購入履歴は見つかりませんでした。');
+        return;
+      }
+
+      localStorage.setItem(adFreePurchaseStorageKey, 'true');
+      setIsAdFree(true);
+      Alert.alert('復元完了', '広告非表示の購入履歴を復元しました。');
+    } catch (error) {
+      console.warn('Failed to restore remove-ads purchase', error);
+      Alert.alert('復元エラー', '購入履歴を復元できませんでした。時間をおいて再度お試しください。');
+    } finally {
+      setIapBusy(false);
+    }
+  };
+
   const resetAppData = () => {
     setSettingsVisible(false);
-    Alert.alert('データ初期化', '登録済みのすべての予定と、通知設定・バックアップ設定を初期状態に戻します。よろしいですか？', [
+    Alert.alert('データ初期化', '登録済みのデータと各種設定を初期状態に戻します。よろしいですか？', [
       { text: 'キャンセル', style: 'cancel' },
       {
         text: '初期化する',
@@ -1684,6 +1944,8 @@ function YohakuCalendarApp() {
         onPress: async () => {
           const today = new Date();
           const todayKey = toDateKey(today);
+          const defaultWeekStartsOn: WeekStart = 0;
+          const defaultHolidayWeekdays: WeekStart[] = [0];
           localStorage.setItem(notificationPermissionPromptedStorageKey, 'true');
           const notificationGranted = await ensureNotificationPermission();
           const nextNotificationSettings: NotificationSettings = {
@@ -1691,11 +1953,25 @@ function YohakuCalendarApp() {
             eventNotificationsEnabled: notificationGranted,
           };
 
+          localStorage.setItem(eventStorageKey, JSON.stringify([]));
+          localStorage.setItem(notificationSettingsStorageKey, JSON.stringify(nextNotificationSettings));
+          localStorage.setItem(themeStorageKey, defaultTheme.id);
+          localStorage.setItem(weekStartStorageKey, String(defaultWeekStartsOn));
+          localStorage.setItem(holidayWeekdaysStorageKey, JSON.stringify(defaultHolidayWeekdays));
+          localStorage.setItem(backupAutoEnabledStorageKey, 'false');
+          localStorage.removeItem(backupLastBackupAtStorageKey);
+
+          if (autoBackupTimerRef.current) {
+            clearTimeout(autoBackupTimerRef.current);
+            autoBackupTimerRef.current = null;
+          }
+
+          autoBackupEventsRef.current = [];
           setEvents([]);
           setNotificationSettings(nextNotificationSettings);
           setSelectedThemeId(defaultTheme.id);
-          setWeekStartsOn(0);
-          setHolidayWeekdays([0]);
+          setWeekStartsOn(defaultWeekStartsOn);
+          setHolidayWeekdays(defaultHolidayWeekdays);
           setAutoBackupEnabled(false);
           setLastBackupAt(null);
           setSelectedEventId('');
@@ -1709,7 +1985,8 @@ function YohakuCalendarApp() {
           setTimePickerTarget(null);
           setNotificationPickerVisible(false);
           await cancelYohakuScheduledNotifications();
-          Alert.alert('初期化完了', 'データを初期状態に戻しました。');
+          syncYohakuTodayWidget([], defaultTheme, defaultWeekStartsOn, defaultHolidayWeekdays);
+          Alert.alert('初期化完了', 'データと各種設定を初期状態に戻しました。');
         },
       },
     ]);
@@ -1718,7 +1995,42 @@ function YohakuCalendarApp() {
   return (
     <View style={styles.root}>
       <StatusBar style="dark" />
-      <View style={[styles.page, compact && styles.pageCompact]}>
+      {settingsPageLayerActive ? (
+        <View pointerEvents="none" style={[styles.page, compact && styles.pageCompact, styles.settingsHomeUnderlay]}>
+          <Header
+            title={formatMonthTitle(visibleMonth)}
+            canGoBack={false}
+            canPickMonth
+            showCalendarActions
+            showSaveAction={false}
+            showDeleteAction={false}
+            onBack={back}
+            onOpenMenu={() => setSettingsVisible(true)}
+            onOpenMonthPicker={() => setMonthPickerVisible(true)}
+            onToday={jumpToday}
+            onSave={saveEvent}
+            onDelete={confirmDeleteEvent}
+          />
+          <View style={styles.calendarLayer}>
+            <View style={styles.calendarStack}>
+              <View style={styles.calendarFadeLayer}>
+                {renderCalendarContent(homeCalendarState)}
+              </View>
+            </View>
+          </View>
+          <View style={styles.addButton}>
+            <Text style={styles.addButtonText}>＋</Text>
+          </View>
+        </View>
+      ) : null}
+      <Animated.View
+        style={[
+          styles.page,
+          compact && styles.pageCompact,
+          settingsPageLayerActive && styles.settingsDetailPage,
+          settingsPageLayerActive && { transform: [{ translateY: settingsPageTranslateY }] },
+        ]}
+      >
         <Header
           title={headerTitle}
           canGoBack={mode === 'form' || mode === 'pro' || mode === 'weekStart' || mode === 'holidayWeekdays' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup'}
@@ -1762,10 +2074,30 @@ function YohakuCalendarApp() {
           />
         )}
 
-        {mode === 'pro' && <AdRemovalScreen />}
+        {mode === 'pro' && (
+          <AdRemovalScreen
+            price={iapProduct?.displayPrice ?? '¥500'}
+            purchased={isAdFree}
+            busy={iapBusy}
+            purchaseAvailable={iapConnected && iapProduct !== null}
+            onPurchase={() => {
+              void purchaseAdRemoval();
+            }}
+            onRestore={() => {
+              void restoreAdRemoval();
+            }}
+          />
+        )}
 
         {mode === 'weekStart' && (
-          <WeekStartScreen selectedWeekStart={weekStartsOn} onSelectWeekStart={setWeekStartsOn} />
+          <WeekStartScreen
+            selectedWeekStart={weekStartsOn}
+            onSelectWeekStart={(nextWeekStartsOn) => {
+              if (nextWeekStartsOn === weekStartsOn) return;
+              setWeekStartsOn(nextWeekStartsOn);
+              requestAutoBackup();
+            }}
+          />
         )}
 
         {mode === 'holidayWeekdays' && (
@@ -1777,6 +2109,7 @@ function YohakuCalendarApp() {
                   ? current.filter((item) => item !== weekday)
                   : [...current, weekday].sort((first, second) => first - second),
               );
+              requestAutoBackup();
             }}
           />
         )}
@@ -1792,7 +2125,14 @@ function YohakuCalendarApp() {
         )}
 
         {mode === 'theme' && (
-          <ThemeColorScreen selectedThemeId={selectedThemeId} onSelectTheme={setSelectedThemeId} />
+          <ThemeColorScreen
+            selectedThemeId={selectedThemeId}
+            onSelectTheme={(nextThemeId) => {
+              if (nextThemeId === selectedThemeId) return;
+              setSelectedThemeId(nextThemeId);
+              requestAutoBackup();
+            }}
+          />
         )}
 
         {mode === 'backup' && (
@@ -1831,28 +2171,22 @@ function YohakuCalendarApp() {
           onClose={() => setSettingsVisible(false)}
           onDismiss={runPendingSettingsAction}
           onOpenPro={() => {
-            setSettingsVisible(false);
-            setMode('pro');
+            openSettingsDetail('pro');
           }}
           onOpenWeekStart={() => {
-            setSettingsVisible(false);
-            setMode('weekStart');
+            openSettingsDetail('weekStart');
           }}
           onOpenHolidayWeekdays={() => {
-            setSettingsVisible(false);
-            setMode('holidayWeekdays');
+            openSettingsDetail('holidayWeekdays');
           }}
           onOpenNotificationSettings={() => {
-            setSettingsVisible(false);
-            setMode('notificationSettings');
+            openSettingsDetail('notificationSettings');
           }}
           onOpenTheme={() => {
-            setSettingsVisible(false);
-            setMode('theme');
+            openSettingsDetail('theme');
           }}
           onOpenBackup={() => {
-            setSettingsVisible(false);
-            setMode('backup');
+            openSettingsDetail('backup');
           }}
           onShareApp={shareApp}
           onOpenStoreReview={openStoreReview}
@@ -1897,8 +2231,8 @@ function YohakuCalendarApp() {
             setNotificationPickerVisible(false);
           }}
         />
-      </View>
-      {mode === 'month' && isAdsReady ? (
+      </Animated.View>
+      {adsEnabled && purchaseStatusReady && !isAdFree && mode === 'month' && isAdsReady ? (
         <SafeAreaView edges={['bottom']} style={styles.bannerSafeArea}>
           <View style={styles.bannerWrap}>
             <BannerAd
@@ -1954,9 +2288,13 @@ function Header({
   return (
     <View style={styles.header}>
       {canGoBack ? (
-        <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => [styles.headerBackButton, pressed && styles.pressed]}>
-          <Text style={styles.headerAction}>‹</Text>
-        </Pressable>
+        showSaveAction ? (
+          <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => [styles.headerBackButton, pressed && styles.pressed]}>
+            <FormBackIcon />
+          </Pressable>
+        ) : (
+          <View style={styles.headerSide} />
+        )
       ) : showCalendarActions || canPickMonth ? (
         <Pressable onPress={onOpenMenu} hitSlop={14} style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}>
           <GearIcon />
@@ -1991,6 +2329,10 @@ function Header({
             <CheckIcon />
           </Pressable>
         </View>
+      ) : canGoBack ? (
+        <Pressable onPress={onBack} hitSlop={18} style={({ pressed }) => [styles.headerDismissButton, pressed && styles.pressed]}>
+          <SettingsDismissIcon />
+        </Pressable>
       ) : (
         <View style={styles.headerSide} />
       )}
@@ -2007,20 +2349,23 @@ function GearIcon() {
 }
 
 function DownChevron() {
-  return (
-    <View style={styles.downChevronIcon}>
-      <View style={styles.downChevronLineLeft} />
-      <View style={styles.downChevronLineRight} />
-    </View>
-  );
+  return <MaterialIcons name="expand-more" size={20} color={tokens.secondaryText} />;
+}
+
+function SettingsDismissIcon() {
+  return <MaterialIcons name="expand-more" size={24} color={tokens.secondaryText} />;
 }
 
 function CloseIcon() {
-  return <Text style={styles.closeIconText}>×</Text>;
+  return <MaterialIcons name="close" size={22} color={tokens.secondaryText} />;
 }
 
 function CheckIcon() {
-  return <Text style={styles.checkIconText}>✓</Text>;
+  return <MaterialIcons name="check" size={22} color={tokens.secondaryText} />;
+}
+
+function FormBackIcon() {
+  return <MaterialIcons name="arrow-back-ios-new" size={22} color={tokens.secondaryText} />;
 }
 
 function AnimatedSelectedCircle({
@@ -2457,9 +2802,8 @@ function SettingsSheet({
         <Pressable style={styles.settingsBackdropPress} onPress={onClose} />
         <View style={styles.settingsSheet}>
           <Pressable onPress={onClose} hitSlop={14} style={({ pressed }) => [styles.settingsCloseButton, pressed && styles.pressed]}>
-            <CloseIcon />
+            <SettingsDismissIcon />
           </Pressable>
-          <View style={styles.settingsHandle} />
           <Text style={styles.settingsTitle}>設定</Text>
           <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
             {settingsSections.map((section, sectionIndex) => (
@@ -2693,7 +3037,21 @@ function ThemeOptionCard({
   );
 }
 
-function AdRemovalScreen() {
+function AdRemovalScreen({
+  price,
+  purchased,
+  busy,
+  purchaseAvailable,
+  onPurchase,
+  onRestore,
+}: {
+  price: string;
+  purchased: boolean;
+  busy: boolean;
+  purchaseAvailable: boolean;
+  onPurchase: () => void;
+  onRestore: () => void;
+}) {
   const legalLinks = [
     { label: 'プライバシーポリシー' },
     { label: '利用規約', url: appleStandardEulaUrl },
@@ -2729,15 +3087,29 @@ function AdRemovalScreen() {
       <View style={styles.proPurchasePanel}>
         <View style={styles.proPurchasePriceBlock}>
           <Text style={styles.proPurchaseType}>買い切り</Text>
-          <Text style={styles.proPurchasePrice}>¥500</Text>
+          <Text style={styles.proPurchasePrice}>{price}</Text>
         </View>
-        <Pressable style={({ pressed }) => [styles.proPurchaseButton, pressed && styles.pressed]}>
-          <Text style={styles.proPurchaseButtonText}>購入する</Text>
+        <Pressable
+          disabled={busy || purchased || !purchaseAvailable}
+          onPress={onPurchase}
+          style={({ pressed }) => [
+            styles.proPurchaseButton,
+            (busy || purchased || !purchaseAvailable) && styles.disabled,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.proPurchaseButtonText}>
+            {purchased ? '購入済み' : busy ? '処理中' : purchaseAvailable ? '購入する' : '準備中'}
+          </Text>
           <MaterialIcons name="chevron-right" size={22} color={tokens.text} />
         </Pressable>
       </View>
 
-      <Pressable style={({ pressed }) => [styles.proRestoreButton, pressed && styles.pressed]}>
+      <Pressable
+        disabled={busy}
+        onPress={onRestore}
+        style={({ pressed }) => [styles.proRestoreButton, busy && styles.disabled, pressed && styles.pressed]}
+      >
         <Text style={styles.proRestoreText}>購入履歴を復元</Text>
       </Pressable>
 
@@ -3726,6 +4098,13 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
   pageCompact: {
     paddingTop: 56,
   },
+  settingsHomeUnderlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  settingsDetailPage: {
+    zIndex: 1,
+    boxShadow: '0 -8px 24px rgba(0, 0, 0, 0.08)',
+  },
   calendarLayer: {
     flex: 1,
   },
@@ -3747,6 +4126,12 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     width: 52,
     height: 42,
     alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  headerDismissButton: {
+    width: 52,
+    height: 42,
+    alignItems: 'flex-end',
     justifyContent: 'center',
   },
   monthTitleButton: {
@@ -3799,32 +4184,6 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     height: 42,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  downChevronIcon: {
-    width: 12,
-    height: 24,
-    position: 'relative',
-    marginTop: 3,
-  },
-  downChevronLineLeft: {
-    position: 'absolute',
-    left: 2,
-    top: 10,
-    width: 6,
-    height: 1.6,
-    borderRadius: 1,
-    backgroundColor: tokens.secondaryText,
-    transform: [{ rotate: '45deg' }],
-  },
-  downChevronLineRight: {
-    position: 'absolute',
-    right: 1.5,
-    top: 10,
-    width: 6,
-    height: 1.6,
-    borderRadius: 1,
-    backgroundColor: tokens.secondaryText,
-    transform: [{ rotate: '-45deg' }],
   },
   monthScreen: {
     flex: 1,
@@ -4104,14 +4463,6 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
-  },
-  settingsHandle: {
-    width: 66,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: '#D8D8D6',
-    alignSelf: 'center',
-    marginBottom: 30,
   },
   settingsTitle: {
     color: tokens.secondaryText,
@@ -4725,18 +5076,6 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  closeIconText: {
-    color: tokens.secondaryText,
-    fontSize: 24,
-    lineHeight: 26,
-    fontWeight: '300',
-  },
-  checkIconText: {
-    color: tokens.secondaryText,
-    fontSize: 20,
-    lineHeight: 22,
-    fontWeight: '400',
   },
   pickerColumns: {
     height: pickerColumnHeight,

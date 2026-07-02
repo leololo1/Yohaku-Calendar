@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "yohaku-calendar",
-      "buildNumber": "25",
+      "buildNumber": "26",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -135,7 +135,8 @@
         {
           "userTrackingPermission": "広告の表示を最適化するために、デバイスの識別子を使用します。"
         }
-      ]
+      ],
+      "expo-iap"
     ]
   }
 }
