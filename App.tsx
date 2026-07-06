@@ -149,7 +149,7 @@ const appStoreReviewFallbackUrl = `${appStoreShareUrl}?action=write-review`;
 const appleStandardEulaUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
 const privacyPolicyUrl = 'https://leololo1.github.io/Yohaku-Calendar-privacy/';
 const productionBannerAdUnitId = 'ca-app-pub-6757694633642168/2928519428';
-const adsEnabled = false;
+const adsEnabled = true;
 const removeAdsProductId = 'yohaku_remove_ads';
 const isProductionBuild = process.env.EXPO_PUBLIC_BUILD_PROFILE === 'production';
 const pickerColumnHeight = 224;
