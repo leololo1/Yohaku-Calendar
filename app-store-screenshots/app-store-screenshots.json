@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 2,
+  "appName": "Yohaku Calendar",
+  "themeId": "yohaku",
+  "connectedCanvas": true,
+  "locales": [
+    "ja"
+  ],
+  "locale": "ja",
+  "device": "iphone",
+  "orientation": "portrait",
+  "appIcon": "/app-icon.png",
+  "slidesByDevice": {
+    "iphone": [
+      {
+        "id": "yohaku-main",
+        "layout": "device-bottom",
+        "backgroundColor": "#ECEBE8",
+        "label": {},
+        "headline": {
+          "ja": "シンプルで\n無駄のない\nカレンダー"
+        },
+        "screenshot": "/screenshots/apple/iphone/ja/01-main.png?v=20260706002925"
+      },
+      {
+        "id": "yohaku-themes",
+        "layout": "two-devices",
+        "backgroundColor": "#ECEBE8",
+        "label": {},
+        "headline": {
+          "ja": "ニュアンスカラーで\nおしゃれに"
+        },
+        "screenshot": "/screenshots/apple/iphone/ja/03-theme-1.png?v=20260706002925",
+        "screenshotSecondary": "/screenshots/apple/iphone/ja/03-theme-2.png?v=20260706002925",
+        "screenshotTertiary": "/screenshots/apple/iphone/ja/03-theme-3.png?v=20260706002925",
+        "screenshotQuaternary": "/screenshots/apple/iphone/ja/03-theme-4.png?v=20260706002925",
+        "transforms": {
+          "caption": {
+            "x": 40,
+            "y": 229.44,
+            "width": 1240,
+            "height": 520,
+            "rotation": 0,
+            "zIndex": 5
+          },
+          "device": {
+            "x": 130,
+            "y": 640,
+            "width": 480,
+            "height": 1043,
+            "rotation": 0,
+            "zIndex": 3
+          },
+          "deviceSecondary": {
+            "x": 710,
+            "y": 640,
+            "width": 480,
+            "height": 1043,
+            "rotation": 0,
+            "zIndex": 3
+          },
+          "deviceTertiary": {
+            "x": 130,
+            "y": 1783,
+            "width": 480,
+            "height": 1043,
+            "rotation": 0,
+            "zIndex": 2
+          },
+          "deviceQuaternary": {
+            "x": 710,
+            "y": 1783,
+            "width": 480,
+            "height": 1043,
+            "rotation": 0,
+            "zIndex": 2
+          }
+        }
+      },
+      {
+        "id": "yohaku-widget",
+        "layout": "device-bottom",
+        "backgroundColor": "#ECEBE8",
+        "label": {},
+        "headline": {
+          "ja": "ウィジェット対応\n予定をひと目で"
+        },
+        "screenshot": "/screenshots/apple/iphone/ja/02-widget.png",
+        "transforms": {
+          "caption": {
+            "x": 105.59999999999991,
+            "y": 229.44,
+            "width": 1108.8,
+            "height": 803.04,
+            "rotation": 0,
+            "zIndex": 4
+          },
+          "device": {
+            "x": 100,
+            "y": 714,
+            "width": 1120,
+            "height": 2154,
+            "rotation": 0,
+            "zIndex": 3
+          }
+        }
+      }
+    ],
+    "android": [],
+    "ipad": [],
+    "android-7": [],
+    "android-10": [],
+    "feature-graphic": []
+  },
+  "crossScreenMockupsByDevice": {
+    "iphone": [],
+    "ipad": [],
+    "android": [],
+    "android-7": [],
+    "android-10": [],
+    "feature-graphic": []
+  }
+}

@@ -51,7 +51,7 @@ import {
 } from 'react-native';
 
 type CalendarMode = 'month';
-type ViewMode = CalendarMode | 'form' | 'pro' | 'weekStart' | 'holidayWeekdays' | 'notificationSettings' | 'theme' | 'backup';
+type ViewMode = CalendarMode | 'form' | 'pro' | 'weekStart' | 'holidayWeekdays' | 'notificationSettings' | 'theme' | 'backup' | 'commerceLaw';
 type SettingsDetailMode = Exclude<ViewMode, CalendarMode | 'form'>;
 type FormMode = 'add' | 'edit';
 type WeekStart = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -147,8 +147,9 @@ const appStoreShareUrl = `https://apps.apple.com/app/id${appStoreAppId}`;
 const appStoreReviewUrl = `itms-apps://itunes.apple.com/app/id${appStoreAppId}?action=write-review`;
 const appStoreReviewFallbackUrl = `${appStoreShareUrl}?action=write-review`;
 const appleStandardEulaUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+const privacyPolicyUrl = 'https://leololo1.github.io/Yohaku-Calendar-privacy/';
 const productionBannerAdUnitId = 'ca-app-pub-6757694633642168/2928519428';
-const adsEnabled = true;
+const adsEnabled = false;
 const removeAdsProductId = 'yohaku_remove_ads';
 const isProductionBuild = process.env.EXPO_PUBLIC_BUILD_PROFILE === 'production';
 const pickerColumnHeight = 224;
@@ -166,6 +167,56 @@ const notificationOptions: { value: NotificationOption; label: string }[] = [
   { value: 'before30', label: '30分前' },
   { value: 'before60', label: '1時間前' },
 ];
+const commerceLawSections = [
+  {
+    title: '販売業者（氏名）',
+    body: '森重 玲生（モリシゲ レオ）',
+  },
+  {
+    title: '所在地',
+    body: '個人開発者につき、請求があった場合に遅滞なく提供いたします。開示をご希望の場合は、下記のメールアドレスまでご連絡ください。',
+  },
+  {
+    title: '電話番号',
+    body: '個人開発者につき、請求があった場合に遅滞なく提供いたします。開示をご希望の場合は、下記のメールアドレスまでご連絡ください。',
+  },
+  {
+    title: 'メールアドレス',
+    body: 'yohaku-calendar.support@gmail.com',
+  },
+  {
+    title: '販売する内容',
+    body: 'Yohaku Calendarの広告非表示機能（買い切り）',
+  },
+  {
+    title: '販売価格',
+    body: 'アプリ内の「広告非表示」購入画面およびApp Storeの購入確認画面に表示される価格に基づきます（税込表示）。',
+  },
+  {
+    title: '販売価格以外に必要な料金',
+    body: 'インターネット接続に必要な通信料金は、ユーザーのご負担となります。',
+  },
+  {
+    title: '代金の支払時期および支払方法',
+    body: 'Apple Inc.が提供する決済手段（App Store経由）によります。代金は購入確定時に請求され、支払時期はご利用の決済手段の定めに従います。',
+  },
+  {
+    title: '役務の提供時期',
+    body: '決済完了後、直ちに広告非表示機能をご利用いただけます。',
+  },
+  {
+    title: '返品・キャンセル（返金）',
+    body: 'デジタルコンテンツの性質上、購入確定後のキャンセルまたは返品には応じられません。返金をご希望の場合は、Appleの定める手続きに従い、Appleサポートへ申請してください。',
+  },
+  {
+    title: '契約期間・解約',
+    body: '本商品は買い切り型であり、定期購読や自動更新はありません。そのため、解約手続きは不要です。',
+  },
+  {
+    title: '動作環境',
+    body: 'App Storeの本アプリ配信ページに表示される対応OSを満たすiPhone端末が必要です。購入、購入履歴の復元、広告表示およびiCloudバックアップにはインターネット接続が必要です。',
+  },
+] as const;
 const switchColors = {
   trackOff: '#FFFFFF',
   thumbOff: '#FFFFFF',
@@ -1398,6 +1449,10 @@ function YohakuCalendarApp() {
       return 'バックアップ';
     }
 
+    if (mode === 'commerceLaw') {
+      return '特定商取引法に基づく表記';
+    }
+
     return '';
   }, [mode, visibleMonth]);
 
@@ -1875,6 +1930,20 @@ function YohakuCalendarApp() {
     });
   };
 
+  const openPrivacyPolicy = () => {
+    closeSettingsThenRun(() => {
+      void WebBrowser.openBrowserAsync(privacyPolicyUrl, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FORM_SHEET,
+      }).catch(() => {
+        WebBrowser.openBrowserAsync(privacyPolicyUrl).catch(() => {
+          Linking.openURL(privacyPolicyUrl).catch(() => {
+            Alert.alert('プライバシーポリシーを開けませんでした');
+          });
+        });
+      });
+    });
+  };
+
   const purchaseAdRemoval = async () => {
     if (isAdFree) {
       Alert.alert('購入済み', '広告はすでに非表示になっています。');
@@ -2033,7 +2102,7 @@ function YohakuCalendarApp() {
       >
         <Header
           title={headerTitle}
-          canGoBack={mode === 'form' || mode === 'pro' || mode === 'weekStart' || mode === 'holidayWeekdays' || mode === 'notificationSettings' || mode === 'theme' || mode === 'backup'}
+          canGoBack={mode === 'form' || settingsDetailVisible}
           canPickMonth={mode === 'month'}
           showCalendarActions={mode === 'month'}
           showSaveAction={mode === 'form'}
@@ -2076,7 +2145,7 @@ function YohakuCalendarApp() {
 
         {mode === 'pro' && (
           <AdRemovalScreen
-            price={iapProduct?.displayPrice ?? '¥500'}
+            price={iapProduct?.displayPrice ?? '---'}
             purchased={isAdFree}
             busy={iapBusy}
             purchaseAvailable={iapConnected && iapProduct !== null}
@@ -2085,6 +2154,9 @@ function YohakuCalendarApp() {
             }}
             onRestore={() => {
               void restoreAdRemoval();
+            }}
+            onOpenCommerceLaw={() => {
+              setMode('commerceLaw');
             }}
           />
         )}
@@ -2150,6 +2222,8 @@ function YohakuCalendarApp() {
           />
         )}
 
+        {mode === 'commerceLaw' && <CommerceLawScreen />}
+
         {mode === 'month' && (
           <Pressable onPress={openAddForm} style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}>
             <Text style={styles.addButtonText}>＋</Text>
@@ -2191,6 +2265,10 @@ function YohakuCalendarApp() {
           onShareApp={shareApp}
           onOpenStoreReview={openStoreReview}
           onOpenTerms={openTerms}
+          onOpenPrivacyPolicy={openPrivacyPolicy}
+          onOpenCommerceLaw={() => {
+            openSettingsDetail('commerceLaw');
+          }}
           onResetData={resetAppData}
         />
 
@@ -2757,7 +2835,7 @@ const settingsSections = [
       title: 'プライバシーポリシー',
     },
     {
-      title: '特定商法に基づく表記',
+      title: '特定商取引法に基づく表記',
     },
   ],
   [
@@ -2780,6 +2858,8 @@ function SettingsSheet({
   onShareApp,
   onOpenStoreReview,
   onOpenTerms,
+  onOpenPrivacyPolicy,
+  onOpenCommerceLaw,
   onResetData,
 }: {
   visible: boolean;
@@ -2794,6 +2874,8 @@ function SettingsSheet({
   onShareApp: () => void;
   onOpenStoreReview: () => void;
   onOpenTerms: () => void;
+  onOpenPrivacyPolicy: () => void;
+  onOpenCommerceLaw: () => void;
   onResetData: () => void;
 }) {
   return (
@@ -2831,6 +2913,10 @@ function SettingsSheet({
                               ? onOpenStoreReview
                               : sectionIndex === 2 && itemIndex === 0
                                 ? onOpenTerms
+                                : sectionIndex === 2 && itemIndex === 1
+                                  ? onOpenPrivacyPolicy
+                                : sectionIndex === 2 && itemIndex === 2
+                                  ? onOpenCommerceLaw
                                 : sectionIndex === 3 && itemIndex === 0
                                   ? onResetData
                                   : undefined
@@ -3044,6 +3130,7 @@ function AdRemovalScreen({
   purchaseAvailable,
   onPurchase,
   onRestore,
+  onOpenCommerceLaw,
 }: {
   price: string;
   purchased: boolean;
@@ -3051,14 +3138,20 @@ function AdRemovalScreen({
   purchaseAvailable: boolean;
   onPurchase: () => void;
   onRestore: () => void;
+  onOpenCommerceLaw: () => void;
 }) {
-  const legalLinks = [
-    { label: 'プライバシーポリシー' },
+  const legalLinks: { label: string; url?: string; onPress?: () => void }[] = [
+    { label: 'プライバシーポリシー', url: privacyPolicyUrl },
     { label: '利用規約', url: appleStandardEulaUrl },
-    { label: '特定商取引法に基づく表記' },
+    { label: '特定商取引法に基づく表記', onPress: onOpenCommerceLaw },
   ];
 
-  const openLegalLink = (label: string, url?: string) => {
+  const openLegalLink = (label: string, url?: string, onPress?: () => void) => {
+    if (onPress) {
+      onPress();
+      return;
+    }
+
     if (!url) {
       Alert.alert(`${label}は準備中です`);
       return;
@@ -3118,7 +3211,7 @@ function AdRemovalScreen({
           <Pressable
             key={link.label}
             accessibilityRole="link"
-            onPress={() => openLegalLink(link.label, link.url)}
+            onPress={() => openLegalLink(link.label, link.url, link.onPress)}
             style={({ pressed }) => [styles.proLegalLinkButton, pressed && styles.pressed]}
           >
             <Text numberOfLines={1} style={styles.proLegalLinkText}>{link.label}</Text>
@@ -3311,6 +3404,23 @@ function BackupActionRow({ title, onPress, disabled = false }: { title: string; 
       <Text style={styles.backupRowTitle}>{title}</Text>
       <Text style={styles.backupChevron}>›</Text>
     </Pressable>
+  );
+}
+
+function CommerceLawScreen() {
+  return (
+    <ScrollView
+      style={styles.commerceLawScreen}
+      contentContainerStyle={styles.commerceLawContent}
+      showsVerticalScrollIndicator={false}
+    >
+      {commerceLawSections.map((section) => (
+        <View key={section.title} style={styles.commerceLawSection}>
+          <Text selectable style={styles.commerceLawTitle}>{section.title}</Text>
+          <Text selectable style={styles.commerceLawBody}>{section.body}</Text>
+        </View>
+      ))}
+    </ScrollView>
   );
 }
 
@@ -5036,6 +5146,30 @@ const createStyles = (themeTokens: ReturnType<typeof createAppTokens>) => {
     fontSize: 34,
     lineHeight: 36,
     fontWeight: '200',
+  },
+  commerceLawScreen: {
+    flex: 1,
+  },
+  commerceLawContent: {
+    paddingHorizontal: 30,
+    paddingTop: 28,
+    paddingBottom: 64,
+    gap: 30,
+  },
+  commerceLawSection: {
+    gap: 8,
+  },
+  commerceLawTitle: {
+    color: tokens.text,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '500',
+  },
+  commerceLawBody: {
+    color: tokens.secondaryText,
+    fontSize: 14,
+    lineHeight: 24,
+    fontWeight: '400',
   },
   backupDescription: {
     marginTop: 'auto',
